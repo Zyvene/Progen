@@ -1,0 +1,60 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/main.gd" id="1"]
+
+[node name="Main" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1")
+
+[node name="ProGenWebsite" type="ScrollContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+horizontal_scroll_mode = 0
+vertical_scroll_mode = 2
+unique_name_in_owner = true
+
+[node name="PageLayout" type="VBoxContainer" parent="ProGenWebsite"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+theme_override_constants/separation = 0
+unique_name_in_owner = true
+
+[node name="Navbar" type="PanelContainer" parent="ProGenWebsite/PageLayout"]
+layout_mode = 2
+size_flags_horizontal = 3
+unique_name_in_owner = true
+
+[node name="HeroPanel" type="PanelContainer" parent="ProGenWebsite/PageLayout"]
+layout_mode = 2
+size_flags_horizontal = 3
+unique_name_in_owner = true
+
+[node name="FeaturesPanel" type="PanelContainer" parent="ProGenWebsite/PageLayout"]
+layout_mode = 2
+size_flags_horizontal = 3
+unique_name_in_owner = true
+
+[node name="HowPanel" type="PanelContainer" parent="ProGenWebsite/PageLayout"]
+layout_mode = 2
+size_flags_horizontal = 3
+unique_name_in_owner = true
+
+[node name="CTA_BlueArea" type="PanelContainer" parent="ProGenWebsite/PageLayout"]
+layout_mode = 2
+size_flags_horizontal = 3
+unique_name_in_owner = true
+
+[node name="FooterDark" type="PanelContainer" parent="ProGenWebsite/PageLayout"]
+layout_mode = 2
+size_flags_horizontal = 3
+unique_name_in_owner = true
