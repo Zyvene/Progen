@@ -1,0 +1,21 @@
+# Python environment and local runtime artifacts
+.venv/
+.venv-1/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+
+# Godot project runtime/cache
+.godot/
+
+# Generated analysis outputs
+sample_topology.json
+results.json
+nltha_history.csv
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
