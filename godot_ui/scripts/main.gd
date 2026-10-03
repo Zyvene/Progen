@@ -9,7 +9,9 @@ const COLOR_TEXT := Color("#111827")
 const COLOR_MUTED := Color("#4b5563")
 const COLOR_LINK := Color("#99a1af")
 const COLOR_BORDER := Color("#e5e7eb")
-const COLOR_PANEL_TINT := Color("#eff6ff")
+const COLOR_PANEL_TINT := Color("#f4f8ff")
+const COLOR_BLUE_SOFT := Color("#eaf2ff")
+const COLOR_BLUE_LINE := Color("#d7e6ff")
 const COLOR_CTA_TEXT := Color("#dbeafe")
 const COLOR_DARK_BORDER := Color("#1e2939")
 
@@ -31,6 +33,12 @@ var tex_arrows: Texture2D
 var tex_design: Texture2D
 var tex_chart: Texture2D
 var tex_3d: Texture2D
+var tex_bg_hero: Texture2D
+var tex_bg_light: Texture2D
+var tex_bg_blue: Texture2D
+var tex_terminal_success: Texture2D
+var tex_terminal_error: Texture2D
+var tex_terminal_warning: Texture2D
 
 @onready var website: ScrollContainer = %ProGenWebsite
 @onready var page_layout: VBoxContainer = %PageLayout
@@ -43,6 +51,7 @@ var tex_3d: Texture2D
 
 var app_view_container: Control
 var scroll_tween: Tween
+var fixed_hero_background: TextureRect
 
 var bay_x_input: LineEdit
 var bay_y_input: LineEdit
@@ -52,6 +61,9 @@ var floor_count_input: LineEdit
 var story_height_input: LineEdit
 var magnitude_input: LineEdit
 var duration_input: LineEdit
+var structural_controls: VBoxContainer
+var simulation_controls: VBoxContainer
+var run_simulation_button: Button
 
 var rule_preview_dropdown: OptionButton
 
@@ -119,7 +131,8 @@ func _process(delta: float) -> void:
 		return
 	if not OS.is_process_running(python_simulation_pid):
 		python_simulation_running = false
-		clean_runs_button.disabled = false
+		if is_instance_valid(clean_runs_button):
+			clean_runs_button.disabled = false
 		_poll_run()
 		_stop_live_shake()
 		_finish_run()
@@ -137,6 +150,7 @@ func _ready() -> void:
 	_load_assets()
 	theme = _build_theme()
 	_configure_layout()
+	_build_fixed_hero_background()
 
 	_build_main_structure()
 	_build_navbar()
@@ -151,13 +165,13 @@ func _ready() -> void:
 func _load_w_sections() -> void:
 	var path := ProjectSettings.globalize_path("res://../w_sections.json")
 	if not FileAccess.file_exists(path):
-		_log_terminal("ERROR: w_sections.json not found next to simulation.py")
+		push_warning("w_sections.json not found next to simulation.py")
 		return
 	var file := FileAccess.open(path, FileAccess.READ)
 	var parsed = JSON.parse_string(file.get_as_text())
 	file.close()
 	if not parsed is Dictionary or not parsed.has("sections"):
-		_log_terminal("ERROR: w_sections.json is not valid")
+		push_warning("w_sections.json is not valid")
 		return
 	structure_display.set_sections(parsed["sections"])
 	preview_view.set_sections(parsed["sections"])
@@ -176,10 +190,55 @@ func _load_assets() -> void:
 	tex_chart = _load_texture("res://assets/images/f08d789c81c84549efa2f4331d2fc82a84dac85a.png")
 	tex_3d = _load_texture("res://assets/images/dd653bd5aa09fcbc12b0969f9655854d3c28e400.png")
 
+	# Terminal status icons supplied by the user.
+	tex_terminal_success = _load_texture_first([
+		"res://assets/images/terminal_success.png",
+		"res://assets/images/line-md--circle-to-confirm-circle-transition.png",
+	])
+	tex_terminal_error = _load_texture_first([
+		"res://assets/images/terminal_error.png",
+		"res://assets/images/line-md--alert-circle.png",
+	])
+	tex_terminal_warning = _load_texture_first([
+		"res://assets/images/terminal_warning.png",
+		"res://assets/images/line-md--alert (1).png",
+	])
+
+	# Landing-page reference backgrounds. The helper tries a few likely filenames so
+	# the script still works if the OS/project removed the upload suffix.
+	tex_bg_hero = _load_texture_first([
+		"res://assets/images/Minimal Blue Wireframe Architecture Background(1).png",
+		"res://assets/images/Minimal Blue Wireframe Architecture Background.png",
+	])
+	tex_bg_light = _load_texture_first([
+		"res://assets/images/Minimalist Blue Tech Grid Background(1).png",
+		"res://assets/images/Minimalist Blue Tech Grid Background.png",
+	])
+	tex_bg_blue = _load_texture_first([
+		"res://assets/images/Blue Architectural Blueprint Background(1).png",
+		"res://assets/images/Blue Architectural Blueprint Background.png",
+	])
+
 func _configure_layout() -> void:
 	website.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	website.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
 	page_layout.add_theme_constant_override("separation", 0)
+
+func _build_fixed_hero_background() -> void:
+	# This wallpaper is attached to the root Control instead of the ScrollContainer.
+	# Because it is outside the scrolling content, it stays fixed on screen while
+	# Hero, Powerful Features, and How ProGen Works all scroll over it
+	# (similar to CSS background-attachment: fixed).
+	fixed_hero_background = TextureRect.new()
+	fixed_hero_background.name = "FixedHeroBackground"
+	fixed_hero_background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	fixed_hero_background.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	fixed_hero_background.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	fixed_hero_background.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	fixed_hero_background.texture = tex_bg_hero
+	fixed_hero_background.z_index = -100
+	add_child(fixed_hero_background)
+	move_child(fixed_hero_background, 0)
 
 func _build_main_structure() -> void:
 	app_view_container = Control.new()
@@ -189,10 +248,14 @@ func _build_main_structure() -> void:
 
 func _switch_to_app() -> void:
 	website.visible = false
+	if fixed_hero_background:
+		fixed_hero_background.visible = false
 	app_view_container.visible = true
 
 func _switch_to_landing() -> void:
 	app_view_container.visible = false
+	if fixed_hero_background:
+		fixed_hero_background.visible = true
 	website.visible = true
 
 func _scroll_to_node(node: Control) -> void:
@@ -297,220 +360,300 @@ func _nav_button(text: String) -> Button:
 
 func _build_hero() -> void:
 	_clear_children(hero_panel)
-	_set_panel_texture_bg(hero_panel, _linear_gradient_texture([COLOR_PANEL_TINT, COLOR_WHITE, COLOR_PANEL_TINT], [0.0, 0.5, 1.0]))
+	# Do not paint the wallpaper on the scrolling Hero panel itself.
+	# The fixed TextureRect behind the ScrollContainer supplies the Hero background.
+	var transparent_hero_style := StyleBoxFlat.new()
+	transparent_hero_style.bg_color = Color(0, 0, 0, 0)
+	transparent_hero_style.border_width_left = 0
+	transparent_hero_style.border_width_top = 0
+	transparent_hero_style.border_width_right = 0
+	transparent_hero_style.border_width_bottom = 0
+	hero_panel.add_theme_stylebox_override("panel", transparent_hero_style)
 
 	var center := CenterContainer.new()
 	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hero_panel.add_child(center)
 
 	var margin := MarginContainer.new()
-	margin.add_theme_constant_override("margin_top", 100)
-	margin.add_theme_constant_override("margin_bottom", 120)
+	margin.add_theme_constant_override("margin_top", 78)
+	margin.add_theme_constant_override("margin_bottom", 92)
 	center.add_child(margin)
 
 	var content := HBoxContainer.new()
-	content.custom_minimum_size = Vector2(1400, 0)
-	content.add_theme_constant_override("separation", 40)
+	content.custom_minimum_size = Vector2(1420, 0)
+	content.add_theme_constant_override("separation", 62)
 	margin.add_child(content)
 
+	# LEFT: copy and controls
 	var left := VBoxContainer.new()
+	left.custom_minimum_size = Vector2(565, 0)
 	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	left.size_flags_stretch_ratio = 1.0
-	left.custom_minimum_size = Vector2(750, 0)
-	left.add_theme_constant_override("separation", 24)
+	left.size_flags_stretch_ratio = 0.88
+	left.add_theme_constant_override("separation", 21)
 	content.add_child(left)
 
+
 	var title_group := VBoxContainer.new()
-	title_group.add_theme_constant_override("separation", -12)
+	title_group.add_theme_constant_override("separation", -9)
 	left.add_child(title_group)
 
 	var title_top := Label.new()
-	title_top.text = "Generate\nStructural Design"
+	title_top.text = "Generate
+Structural Design"
 	title_top.add_theme_font_override("font", font_poppins_bold)
-	title_top.add_theme_font_size_override("font_size", 72)
-	title_top.add_theme_color_override("font_color", COLOR_TEXT)
+	title_top.add_theme_font_size_override("font_size", 62)
+	title_top.add_theme_color_override("font_color", Color("#07142e"))
+	title_top.add_theme_constant_override("line_spacing", -7)
 	title_group.add_child(title_top)
 
 	var brand_row := HBoxContainer.new()
 	brand_row.add_theme_constant_override("separation", 0)
 	title_group.add_child(brand_row)
-
 	var title_with := Label.new()
 	title_with.text = "with "
 	title_with.add_theme_font_override("font", font_poppins_bold)
-	title_with.add_theme_font_size_override("font_size", 72)
-	title_with.add_theme_color_override("font_color", COLOR_TEXT)
+	title_with.add_theme_font_size_override("font_size", 62)
+	title_with.add_theme_color_override("font_color", Color("#07142e"))
 	brand_row.add_child(title_with)
-
-	var pro_label = _brand_label("Pro", COLOR_ORANGE)
-	pro_label.add_theme_font_size_override("font_size", 72)
+	var pro_label = _brand_label("Pro", Color("#ff9d1f"))
+	pro_label.add_theme_font_size_override("font_size", 62)
 	brand_row.add_child(pro_label)
-
-	var gen_label = _brand_label("Gen", COLOR_BLUE)
-	gen_label.add_theme_font_size_override("font_size", 72)
+	var gen_label = _brand_label("Gen", Color("#1367ff"))
+	gen_label.add_theme_font_size_override("font_size", 62)
 	brand_row.add_child(gen_label)
 
-	var body := Label.new()
-	body.text = "ProGen is a closed-loop rule-based procedural generation system that creates optimized 3D structural models and refines them using seismic simulation feedback. Generate, simulate, evaluate, and refine—all in one platform."
-	body.add_theme_font_override("font", font_inter)
-	body.add_theme_font_size_override("font_size", 20)
-	body.add_theme_color_override("font_color", COLOR_MUTED)
+	var body := _body_label("ProGen is a closed-loop rule-based procedural generation system that creates optimized 3D structural models and refines them using seismic simulation feedback. Generate, simulate, evaluate, and refine—all in one platform.", 17)
 	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.custom_minimum_size = Vector2(560, 0)
 	left.add_child(body)
 
 	var buttons := HBoxContainer.new()
-	buttons.add_theme_constant_override("separation", 20)
+	buttons.add_theme_constant_override("separation", 16)
 	left.add_child(buttons)
-
-	var get_started_btn := _primary_button("Get Started", Vector2(170, 60))
+	var get_started_btn := _primary_button("Get Started", Vector2(205, 58))
 	get_started_btn.pressed.connect(func(): _scroll_to_node(features_panel))
 	buttons.add_child(get_started_btn)
-
-	var learn_more_btn := _outline_button("Learn More", Vector2(170, 60))
+	var learn_more_btn := _outline_button("Learn More", Vector2(158, 58))
 	learn_more_btn.pressed.connect(func(): _scroll_to_node(how_panel))
 	buttons.add_child(learn_more_btn)
 
+
+	# RIGHT: app preview, matching the large rounded reference card.
 	var right := PanelContainer.new()
-	right.theme_type_variation = "PanelContainer"
-	right.add_theme_stylebox_override("panel", _style_box(COLOR_WHITE, COLOR_WHITE, 0, 0))
 	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	right.size_flags_stretch_ratio = 1.0
+	right.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	right.size_flags_stretch_ratio = 1.12
+	var right_style := _style_box(Color(1, 1, 1, 0.96), Color("#d6e6fb"), 1, 16, 9)
+	right_style.shadow_color = Color(0.05, 0.27, 0.72, 0.12)
+	right_style.shadow_size = 18
+	right.add_theme_stylebox_override("panel", right_style)
 	content.add_child(right)
 
 	var hero_image := TextureRect.new()
 	hero_image.texture = tex_hero
-	hero_image.custom_minimum_size = Vector2(600, 450)
+	hero_image.custom_minimum_size = Vector2(690, 430)
 	hero_image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	hero_image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	right.add_child(hero_image)
 
 func _build_features() -> void:
 	_clear_children(features_panel)
-	features_panel.add_theme_stylebox_override("panel", _style_box(COLOR_WHITE, COLOR_WHITE, 0, 0))
+	# Keep this section transparent so the same fixed landing-page wallpaper
+	# remains visible while the user scrolls through Powerful Features.
+	var transparent_features_style := StyleBoxFlat.new()
+	transparent_features_style.bg_color = Color(0, 0, 0, 0)
+	transparent_features_style.border_width_left = 0
+	transparent_features_style.border_width_top = 0
+	transparent_features_style.border_width_right = 0
+	transparent_features_style.border_width_bottom = 0
+	features_panel.add_theme_stylebox_override("panel", transparent_features_style)
 
 	var center := CenterContainer.new()
 	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	features_panel.add_child(center)
 
 	var margin := MarginContainer.new()
-	margin.add_theme_constant_override("margin_top", 80)
-	margin.add_theme_constant_override("margin_bottom", 80)
+	margin.add_theme_constant_override("margin_top", 58)
+	margin.add_theme_constant_override("margin_bottom", 58)
 	center.add_child(margin)
 
 	var content := VBoxContainer.new()
 	content.custom_minimum_size = Vector2(1400, 0)
-	content.add_theme_constant_override("separation", 64)
+	content.add_theme_constant_override("separation", 30)
 	margin.add_child(content)
 
-	content.add_child(_section_title("Powerful Features", "Everything you need to design and optimize structures"))
+	var heading := VBoxContainer.new()
+	heading.add_theme_constant_override("separation", 8)
+	heading.add_child(_center_label("Everything you need to generate,
+test, and optimize", font_poppins_bold, 40, Color("#07142e")))
+	content.add_child(heading)
 
 	var grid := GridContainer.new()
 	grid.columns = 3
 	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	grid.add_theme_constant_override("h_separation", 32)
-	grid.add_theme_constant_override("v_separation", 32)
+	grid.add_theme_constant_override("h_separation", 22)
+	grid.add_theme_constant_override("v_separation", 20)
 	content.add_child(grid)
 
 	var specs := [
-		["Procedural Generation", "Automatically generate beam-column structures based on your specifications.", tex_wrench],
-		["Seismic Simulation", "Simulate real-world seismic behavior with customizable magnitude and duration parameters.", tex_earthquakes],
-		["Iterative Refinement", "Automatically refine structures through 10 iterations based on seismic performance feedback.", tex_arrows],
-		["3D Visualization", "Interactive 3D viewport with full camera controls. Rotate, zoom, and pan.", tex_3d],
-		["Performance Metrics", "Track key metrics like drift ratio, safety factor, and material usage.", tex_chart],
-		["Design Constraints", "Define custom design constraints and safety thresholds.", tex_design],
+		["01", "Procedural Generation", "Automatically generate beam-column
+structures based on your specifications.", tex_wrench],
+		["02", "Seismic Simulation", "Simulate real-world seismic behavior with
+customizable magnitude and duration parameters.", tex_earthquakes],
+		["03", "Iterative Refinement", "Automatically refine structures through 10
+iterations based on seismic performance feedback.", tex_arrows],
+		["04", "3D Visualization", "Interactive 3D viewport with full camera controls.
+Rotate, zoom, and pan.", tex_3d],
+		["05", "Performance Metrics", "Track key metrics like drift ratio, safety factor,
+and material usage.", tex_chart],
+		["06", "Design Constraints", "Define custom design constraints and safety
+thresholds.", tex_design],
 	]
-
 	for spec in specs:
-		grid.add_child(_feature_card(spec[0], spec[1], spec[2]))
+		grid.add_child(_numbered_feature_card(spec[0], spec[1], spec[2], spec[3]))
+
+	# Compact proof strip below the feature cards. Give it an explicit width so
+	# the HBox never collapses into a narrow column on wide/HiDPI layouts.
+	var proof_center := CenterContainer.new()
+	proof_center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	content.add_child(proof_center)
+
+	var proof := PanelContainer.new()
+	proof.custom_minimum_size = Vector2(780, 58)
+	proof.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	var proof_style := _style_box(Color(0.98, 0.995, 1.0, 0.96), Color("#dce9fb"), 1, 16, 14)
+	proof_style.shadow_color = Color(0.04, 0.22, 0.60, 0.035)
+	proof_style.shadow_size = 6
+	proof.add_theme_stylebox_override("panel", proof_style)
+	proof_center.add_child(proof)
+
+	var proof_row := HBoxContainer.new()
+	proof_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	proof_row.add_theme_constant_override("separation", 34)
+	proof.add_child(proof_row)
+	proof_row.add_child(_compact_proof_item("⚙", "Rule-based generation"))
+	proof_row.add_child(_compact_proof_item("◇", "Seismic-aware optimization"))
+	proof_row.add_child(_compact_proof_item("□", "Interactive 3D analysis"))
 
 func _build_how_it_works() -> void:
 	_clear_children(how_panel)
-	_set_panel_texture_bg(how_panel, _linear_gradient_texture([COLOR_PANEL_TINT, COLOR_WHITE], [0.0, 1.0]))
+	# Keep this section transparent so the fixed wallpaper also stays visible
+	# behind How ProGen Works.
+	var transparent_how_style := StyleBoxFlat.new()
+	transparent_how_style.bg_color = Color(0, 0, 0, 0)
+	transparent_how_style.border_width_left = 0
+	transparent_how_style.border_width_top = 0
+	transparent_how_style.border_width_right = 0
+	transparent_how_style.border_width_bottom = 0
+	how_panel.add_theme_stylebox_override("panel", transparent_how_style)
 
 	var center := CenterContainer.new()
 	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	how_panel.add_child(center)
 
 	var margin := MarginContainer.new()
-	margin.add_theme_constant_override("margin_top", 80)
-	margin.add_theme_constant_override("margin_bottom", 80)
+	margin.add_theme_constant_override("margin_top", 66)
+	margin.add_theme_constant_override("margin_bottom", 64)
 	center.add_child(margin)
 
 	var content := VBoxContainer.new()
 	content.custom_minimum_size = Vector2(1400, 0)
-	content.add_theme_constant_override("separation", 48)
+	content.add_theme_constant_override("separation", 40)
 	margin.add_child(content)
 
-	content.add_child(_section_title("How ProGen Works", "A three-stage process for intelligent structural design"))
+	# Use one RichTextLabel for the title instead of four expanding Labels.
+	# The old HBox allowed each label to expand, which could squeeze every word
+	# into a few pixels and make the title render vertically.
+	var title_box := VBoxContainer.new()
+	title_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title_box.add_theme_constant_override("separation", 8)
 
-	var stages_wrapper := Control.new()
-	stages_wrapper.custom_minimum_size = Vector2(1400, 320)
-	stages_wrapper.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	content.add_child(stages_wrapper)
+	var title := RichTextLabel.new()
+	title.bbcode_enabled = true
+	title.fit_content = false
+	title.scroll_active = false
+	title.autowrap_mode = TextServer.AUTOWRAP_OFF
+	title.custom_minimum_size = Vector2(0, 58)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title.add_theme_font_override("normal_font", font_poppins_bold)
+	title.add_theme_font_override("bold_font", font_poppins_bold)
+	title.add_theme_font_size_override("normal_font_size", 37)
+	title.add_theme_font_size_override("bold_font_size", 37)
+	title.text = "[center][color=#07142e]How [/color][color=#ff9d1f]Pro[/color][color=#155dfc]Gen[/color][color=#07142e] Works[/color][/center]"
+	title_box.add_child(title)
 
-	var stages := HBoxContainer.new()
-	stages.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	stages.add_theme_constant_override("separation", 32)
-	stages_wrapper.add_child(stages)
+	var subtitle := _center_label("A three-stage process for intelligent structural design", font_inter, 17, COLOR_MUTED)
+	subtitle.autowrap_mode = TextServer.AUTOWRAP_OFF
+	subtitle.custom_minimum_size = Vector2(0, 28)
+	title_box.add_child(subtitle)
+	content.add_child(title_box)
 
-	stages.add_child(_stage_card("1", "Input Stage", "Define your structural parameters:", ["Bay X & Y (column spacing)", "Bay widths (dimensions)", "Floor count & story height", "Seismic magnitude & duration"]))
-	stages.add_child(_stage_card("2", "Generation & Simulation", "ProGen processes your inputs:", ["Generate beam-column model", "Run seismic simulation", "Evaluate performance", "Detect structural weaknesses"]))
-	stages.add_child(_stage_card("3", "Refinement & Output", "Iterative optimization:", ["10 refinement iterations", "Automatic optimization", "Safety threshold validation", "Final optimized structure"]))
+	var row := HBoxContainer.new()
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_theme_constant_override("separation", 16)
+	content.add_child(row)
+
+	var stage_data := [
+		["▤", "Input Stage", "Define your structural parameters:", ["Bay X & Y (column spacing)", "Bay widths (dimensions)", "Floor count & story height", "Seismic magnitude & duration"]],
+		["⚙", "Generation & Simulation", "ProGen processes your inputs:", ["Generate beam-column model", "Run seismic simulation", "Evaluate performance", "Detect structural weaknesses"]],
+		["↻", "Refinement & Output", "Iterative optimization:", ["10 refinement iterations", "Automatic optimization", "Safety threshold validation", "Final optimized structure"]],
+	]
+	for i in range(stage_data.size()):
+		row.add_child(_simple_stage_card(stage_data[i][0], stage_data[i][1], stage_data[i][2], stage_data[i][3]))
+		if i < stage_data.size() - 1:
+			var arrow_wrap := CenterContainer.new()
+			arrow_wrap.custom_minimum_size = Vector2(44, 0)
+			var arrow := Label.new()
+			arrow.text = "→"
+			arrow.add_theme_font_override("font", font_poppins_bold)
+			arrow.add_theme_font_size_override("font_size", 34)
+			arrow.add_theme_color_override("font_color", COLOR_BLUE)
+			arrow_wrap.add_child(arrow)
+			row.add_child(arrow_wrap)
 
 func _build_cta() -> void:
 	_clear_children(cta_area)
-	cta_area.add_theme_stylebox_override("panel", _style_box(COLOR_BLUE_DARK, COLOR_BLUE_DARK, 0, 0))
+	if tex_bg_blue:
+		_set_panel_texture_bg(cta_area, tex_bg_blue)
+	else:
+		_set_panel_texture_bg(cta_area, _linear_gradient_texture([Color("#1167ff"), Color("#003eff"), Color("#1769ff")], [0.0, 0.55, 1.0]))
 
 	var center := CenterContainer.new()
 	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	cta_area.add_child(center)
 
 	var cta_margin := MarginContainer.new()
-	cta_margin.add_theme_constant_override("margin_top", 80)
-	cta_margin.add_theme_constant_override("margin_bottom", 80)
+	cta_margin.add_theme_constant_override("margin_top", 62)
+	cta_margin.add_theme_constant_override("margin_bottom", 62)
 	center.add_child(cta_margin)
 
 	var content := VBoxContainer.new()
 	content.alignment = BoxContainer.ALIGNMENT_CENTER
 	content.custom_minimum_size = Vector2(1400, 0)
 	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	content.add_theme_constant_override("separation", 24)
+	content.add_theme_constant_override("separation", 17)
 	cta_margin.add_child(content)
 
-	content.add_child(_center_label("Ready to Optimize Your Structures?", font_poppins_bold, 36, COLOR_WHITE))
-	content.add_child(_center_label("Start designing smarter, safer structures today with ProGen", font_inter, 20, COLOR_CTA_TEXT))
+	content.add_child(_center_label("Ready to Optimize Your Structures?", font_poppins_bold, 35, COLOR_WHITE))
+	content.add_child(_center_label("Start designing smarter, safer structures today with ProGen.", font_inter, 17, Color("#e2ecff")))
 
 	var btn_center := CenterContainer.new()
 	btn_center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-
 	var btn := Button.new()
 	btn.text = "Launch ProGen App"
-	btn.custom_minimum_size = Vector2(253, 60)
+	btn.custom_minimum_size = Vector2(250, 58)
 	btn.add_theme_font_override("font", font_poppins_bold)
-	btn.add_theme_font_size_override("font_size", 18)
-
-	var white_btn_style := StyleBoxFlat.new()
-	white_btn_style.bg_color = COLOR_WHITE
-	set_all_corners(white_btn_style, 8)
-	btn.add_theme_stylebox_override("normal", white_btn_style)
-
-	var white_btn_hover := StyleBoxFlat.new()
-	white_btn_hover.bg_color = COLOR_PANEL_TINT
-	set_all_corners(white_btn_hover, 8)
-	btn.add_theme_stylebox_override("hover", white_btn_hover)
-	btn.add_theme_stylebox_override("pressed", white_btn_hover)
-
+	btn.add_theme_font_size_override("font_size", 16)
 	btn.add_theme_color_override("font_color", COLOR_BLUE)
 	btn.add_theme_color_override("font_hover_color", COLOR_BLUE)
-	btn.add_theme_color_override("font_pressed_color", COLOR_BLUE)
-
+	var btn_style := _style_box(COLOR_WHITE, COLOR_WHITE, 0, 9)
+	btn_style.shadow_color = Color(0.02, 0.15, 0.45, 0.20)
+	btn_style.shadow_size = 8
+	btn.add_theme_stylebox_override("normal", btn_style)
+	btn.add_theme_stylebox_override("hover", _style_box(Color("#f4f8ff"), COLOR_WHITE, 0, 9))
 	btn.pressed.connect(_switch_to_app)
 	btn_center.add_child(btn)
-
-	var btn_margin := MarginContainer.new()
-	btn_margin.add_theme_constant_override("margin_top", 12)
-	content.add_child(btn_margin)
-	btn_margin.add_child(btn_center)
+	content.add_child(btn_center)
 
 func _build_footer() -> void:
 	_clear_children(footer_dark)
@@ -549,22 +692,25 @@ func _build_footer() -> void:
 	content.add_child(_center_label("© 2026 ProGen. All rights reserved. GENERATE • OPTIMIZE • BUILD", font_inter, 14, COLOR_LINK))
 
 func _build_app_view() -> void:
+	# Polished reference-style dashboard.
 	var app_root := VBoxContainer.new()
 	app_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	app_root.add_theme_constant_override("separation", 0)
 	app_view_container.add_child(app_root)
 
+	# Header
 	var app_nav := PanelContainer.new()
-	app_nav.custom_minimum_size = Vector2(0, 77)
-	var nav_style := _style_box(COLOR_WHITE, COLOR_BORDER, 1, 0, 0)
+	app_nav.custom_minimum_size = Vector2(0, 104)
+	var nav_style := _style_box(COLOR_WHITE, Color("#edf2f8"), 1, 0, 0)
 	nav_style.shadow_size = 0
 	app_nav.add_theme_stylebox_override("panel", nav_style)
 	app_root.add_child(app_nav)
 
 	var nav_margin := MarginContainer.new()
-	nav_margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	nav_margin.add_theme_constant_override("margin_left", 32)
-	nav_margin.add_theme_constant_override("margin_right", 32)
+	nav_margin.add_theme_constant_override("margin_left", 44)
+	nav_margin.add_theme_constant_override("margin_right", 44)
+	nav_margin.add_theme_constant_override("margin_top", 8)
+	nav_margin.add_theme_constant_override("margin_bottom", 8)
 	app_nav.add_child(nav_margin)
 
 	var nav_row := HBoxContainer.new()
@@ -574,123 +720,166 @@ func _build_app_view() -> void:
 
 	var logo := TextureRect.new()
 	logo.texture = tex_logo
-	logo.custom_minimum_size = Vector2(200, 150)
+	logo.custom_minimum_size = Vector2(300, 82)
 	logo.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	logo.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	# KEEP_ASPECT (rather than CENTERED) keeps the actual logo artwork against
+	# the left side of its header slot instead of floating in the middle.
+	logo.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT
+	logo.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	logo.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	nav_row.add_child(logo)
 
-	var spacer := Control.new()
-	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	nav_row.add_child(spacer)
+	var nav_spacer := Control.new()
+	nav_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	nav_row.add_child(nav_spacer)
 
 	var back_btn := Button.new()
-	back_btn.text = "← Back to Home"
-	back_btn.flat = true
-	back_btn.add_theme_font_override("font", font_inter)
-	back_btn.add_theme_font_size_override("font_size", 16)
-	back_btn.add_theme_color_override("font_color", COLOR_TEXT)
+	back_btn.text = "←  Back to Home"
+	back_btn.custom_minimum_size = Vector2(156, 42)
+	back_btn.focus_mode = Control.FOCUS_NONE
+	back_btn.add_theme_font_override("font", font_poppins_bold)
+	back_btn.add_theme_font_size_override("font_size", 14)
+	back_btn.add_theme_color_override("font_color", COLOR_NAVY)
 	back_btn.add_theme_color_override("font_hover_color", COLOR_BLUE)
-	back_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	back_btn.add_theme_stylebox_override("normal", _style_box(Color("#ffffff"), Color("#dbe8f7"), 1, 20, 12))
+	back_btn.add_theme_stylebox_override("hover", _style_box(Color("#f8fbff"), Color("#bdd6fb"), 1, 20, 12))
+	back_btn.add_theme_stylebox_override("pressed", _style_box(Color("#eef5ff"), Color("#94bdf8"), 1, 20, 12))
 	back_btn.pressed.connect(_switch_to_landing)
 	nav_row.add_child(back_btn)
 
+	# Main body
 	var body_panel := PanelContainer.new()
 	body_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	body_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	var body_style := StyleBoxFlat.new()
-	body_style.bg_color = COLOR_WHITE
+	body_style.bg_color = Color("#f4f8fe")
 	body_panel.add_theme_stylebox_override("panel", body_style)
 	app_root.add_child(body_panel)
 
 	var body_margin := MarginContainer.new()
-	body_margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	body_margin.add_theme_constant_override("margin_left", 24)
-	body_margin.add_theme_constant_override("margin_right", 24)
-	body_margin.add_theme_constant_override("margin_top", 16)
-	body_margin.add_theme_constant_override("margin_bottom", 16)
+	body_margin.add_theme_constant_override("margin_left", 20)
+	body_margin.add_theme_constant_override("margin_right", 20)
+	body_margin.add_theme_constant_override("margin_top", 12)
+	body_margin.add_theme_constant_override("margin_bottom", 14)
 	body_panel.add_child(body_margin)
 
 	var workspace_vbox := VBoxContainer.new()
 	workspace_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	workspace_vbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	workspace_vbox.add_theme_constant_override("separation", 16)
+	workspace_vbox.add_theme_constant_override("separation", 10)
 	body_margin.add_child(workspace_vbox)
 
 	var main_hbox := HBoxContainer.new()
 	main_hbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	main_hbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	main_hbox.add_theme_constant_override("separation", 20)
+	main_hbox.add_theme_constant_override("separation", 12)
 	workspace_vbox.add_child(main_hbox)
 
+	# LEFT CARD — Structural inputs
+	var left_card := PanelContainer.new()
+	left_card.custom_minimum_size = Vector2(310, 0)
+	left_card.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var left_style := _style_box(Color("#ffffff"), Color("#e1eaf5"), 1, 12, 16)
+	left_style.shadow_color = Color(0.05, 0.16, 0.34, 0.055)
+	left_style.shadow_size = 8
+	left_card.add_theme_stylebox_override("panel", left_style)
+	main_hbox.add_child(left_card)
+
 	var left_scroll := ScrollContainer.new()
-	left_scroll.custom_minimum_size = Vector2(300, 0)
+	left_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	left_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	left_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	main_hbox.add_child(left_scroll)
+	left_card.add_child(left_scroll)
 
 	var left_vbox := VBoxContainer.new()
 	left_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	left_vbox.add_theme_constant_override("separation", 12)
+	left_vbox.add_theme_constant_override("separation", 9)
 	left_scroll.add_child(left_vbox)
 
-	left_vbox.add_child(_app_section_heading("STRUCTURAL INPUTS"))
-	bay_x_input = _app_input_field(left_vbox, "Bay X (1-10):", "3")
-	bay_y_input = _app_input_field(left_vbox, "Bay Y (1-10):", "3")
-	bay_width_x_input = _app_input_field(left_vbox, "Bays Width X, m (3-9):", "6")
-	bay_width_y_input = _app_input_field(left_vbox, "Bays Width Y, m (3-9):", "6")
-	floor_count_input = _app_input_field(left_vbox, "Floor Count (1-10):", "4")
-	story_height_input = _app_input_field(left_vbox, "Story Height, m (3-5):", "3.5")
+	# Initial state: show only the structural generation form.
+	structural_controls = VBoxContainer.new()
+	structural_controls.add_theme_constant_override("separation", 9)
+	left_vbox.add_child(structural_controls)
 
-	var spacer_mid := Control.new()
-	spacer_mid.custom_minimum_size = Vector2(0, 8)
-	left_vbox.add_child(spacer_mid)
+	var structural_title := Label.new()
+	structural_title.text = "▣   Structural Inputs"
+	structural_title.add_theme_font_override("font", font_poppins_bold)
+	structural_title.add_theme_font_size_override("font_size", 17)
+	structural_title.add_theme_color_override("font_color", COLOR_BLUE)
+	structural_controls.add_child(structural_title)
 
-	left_vbox.add_child(_app_section_heading("SEISMIC INPUTS"))
-	magnitude_input = _app_input_field(left_vbox, "Magnitude (1-10):", "5")
-	duration_input = _app_input_field(left_vbox, "Duration, secs (10-30):", "15")
+	bay_x_input = _app_input_field(structural_controls, "Bay X (1–10)", "3")
+	bay_y_input = _app_input_field(structural_controls, "Bay Y (1–10)", "3")
+	bay_width_x_input = _app_input_field(structural_controls, "Bays Width X, m (3–9)", "6")
+	bay_width_y_input = _app_input_field(structural_controls, "Bays Width Y, m (3–9)", "6")
+	floor_count_input = _app_input_field(structural_controls, "Floor Count (1–10)", "4")
+	story_height_input = _app_input_field(structural_controls, "Story Height, m (3–5)", "3.5")
 
-	var gen_btn := Button.new()
-	gen_btn.text = "GENERATE STRUCTURE"
-	gen_btn.custom_minimum_size = Vector2(0, 44)
-	gen_btn.focus_mode = Control.FOCUS_NONE
-	gen_btn.add_theme_font_override("font", font_poppins_bold)
-	gen_btn.add_theme_font_size_override("font_size", 18)
-	var gen_style := StyleBoxFlat.new()
-	gen_style.bg_color = COLOR_BLUE
-	set_all_corners(gen_style, 8)
-	gen_btn.add_theme_stylebox_override("normal", gen_style)
-	gen_btn.add_theme_color_override("font_color", COLOR_WHITE)
-	gen_btn.pressed.connect(_on_generate_pressed)
-	left_vbox.add_child(gen_btn)
+	var generate_btn := Button.new()
+	generate_btn.text = "⚙   Generate Structure   →"
+	generate_btn.custom_minimum_size = Vector2(0, 56)
+	generate_btn.focus_mode = Control.FOCUS_NONE
+	generate_btn.add_theme_font_override("font", font_poppins_bold)
+	generate_btn.add_theme_font_size_override("font_size", 15)
+	generate_btn.add_theme_color_override("font_color", COLOR_WHITE)
+	var generate_normal := _style_box(Color("#0865f8"), Color("#0865f8"), 0, 9, 14)
+	generate_normal.shadow_color = Color(0.03, 0.28, 0.85, 0.18)
+	generate_normal.shadow_size = 9
+	generate_btn.add_theme_stylebox_override("normal", generate_normal)
+	generate_btn.add_theme_stylebox_override("hover", _style_box(Color("#0057e8"), Color("#0057e8"), 0, 9, 14))
+	generate_btn.add_theme_stylebox_override("pressed", _style_box(Color("#004dcc"), Color("#004dcc"), 0, 9, 14))
+	generate_btn.pressed.connect(_on_generate_pressed)
+	structural_controls.add_child(generate_btn)
 
-	var sim_btn := Button.new()
-	sim_btn.text = "RUN SIMULATION"
-	sim_btn.custom_minimum_size = Vector2(0, 44)
-	sim_btn.focus_mode = Control.FOCUS_NONE
-	sim_btn.add_theme_font_override("font", font_poppins_bold)
-	sim_btn.add_theme_font_size_override("font_size", 18)
-	var sim_style := StyleBoxFlat.new()
-	sim_style.bg_color = COLOR_ORANGE
-	set_all_corners(sim_style, 8)
-	sim_btn.add_theme_stylebox_override("normal", sim_style)
-	sim_btn.add_theme_color_override("font_color", COLOR_WHITE)
-	sim_btn.pressed.connect(_on_simulate_pressed)
-	left_vbox.add_child(sim_btn)
+	# After successful generation this replaces the structural form entirely.
+	simulation_controls = VBoxContainer.new()
+	simulation_controls.add_theme_constant_override("separation", 9)
+	simulation_controls.visible = false
+	left_vbox.add_child(simulation_controls)
 
-	var reset_btn := Button.new()
-	reset_btn.text = "RESET STRUCTURE"
-	reset_btn.custom_minimum_size = Vector2(0, 44)
-	reset_btn.focus_mode = Control.FOCUS_NONE
-	reset_btn.add_theme_font_override("font", font_poppins_bold)
-	reset_btn.add_theme_font_size_override("font_size", 18)
-	var reset_style := StyleBoxFlat.new()
-	reset_style.bg_color = COLOR_NAVY
-	set_all_corners(reset_style, 8)
-	reset_btn.add_theme_stylebox_override("normal", reset_style)
-	reset_btn.add_theme_color_override("font_color", COLOR_WHITE)
-	reset_btn.pressed.connect(_on_reset_pressed)
-	left_vbox.add_child(reset_btn)
+	var sim_title := Label.new()
+	sim_title.text = "⌁   Seismic Inputs"
+	sim_title.add_theme_font_override("font", font_poppins_bold)
+	sim_title.add_theme_font_size_override("font_size", 17)
+	sim_title.add_theme_color_override("font_color", COLOR_BLUE)
+	simulation_controls.add_child(sim_title)
+
+	var sim_help := Label.new()
+	sim_help.text = "Set the seismic parameters for the generated structure."
+	sim_help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	sim_help.add_theme_font_override("font", font_inter)
+	sim_help.add_theme_font_size_override("font_size", 12)
+	sim_help.add_theme_color_override("font_color", COLOR_MUTED)
+	simulation_controls.add_child(sim_help)
+
+	magnitude_input = _app_input_field(simulation_controls, "Magnitude (1–10)", "5")
+	duration_input = _app_input_field(simulation_controls, "Duration, sec (10–30)", "15")
+
+	run_simulation_button = Button.new()
+	run_simulation_button.text = "▶   Run Simulation"
+	run_simulation_button.custom_minimum_size = Vector2(0, 52)
+	run_simulation_button.focus_mode = Control.FOCUS_NONE
+	run_simulation_button.add_theme_font_override("font", font_poppins_bold)
+	run_simulation_button.add_theme_font_size_override("font_size", 15)
+	run_simulation_button.add_theme_color_override("font_color", COLOR_WHITE)
+	run_simulation_button.add_theme_stylebox_override("normal", _style_box(COLOR_ORANGE, COLOR_ORANGE, 0, 9, 14))
+	run_simulation_button.add_theme_stylebox_override("hover", _style_box(Color("#f59b23"), Color("#f59b23"), 0, 9, 14))
+	run_simulation_button.add_theme_stylebox_override("pressed", _style_box(Color("#e98c12"), Color("#e98c12"), 0, 9, 14))
+	run_simulation_button.pressed.connect(_on_simulate_pressed)
+	simulation_controls.add_child(run_simulation_button)
+
+	var seismic_reset_btn := Button.new()
+	seismic_reset_btn.text = "↻   Reset Structure"
+	seismic_reset_btn.custom_minimum_size = Vector2(0, 48)
+	seismic_reset_btn.focus_mode = Control.FOCUS_NONE
+	seismic_reset_btn.add_theme_font_override("font", font_poppins_bold)
+	seismic_reset_btn.add_theme_font_size_override("font_size", 14)
+	seismic_reset_btn.add_theme_color_override("font_color", COLOR_BLUE)
+	seismic_reset_btn.add_theme_stylebox_override("normal", _style_box(Color("#ffffff"), Color("#1267f4"), 1, 9, 12))
+	seismic_reset_btn.add_theme_stylebox_override("hover", _style_box(Color("#f5f9ff"), Color("#1267f4"), 1, 9, 12))
+	seismic_reset_btn.add_theme_stylebox_override("pressed", _style_box(Color("#edf4ff"), Color("#1267f4"), 1, 9, 12))
+	seismic_reset_btn.pressed.connect(_on_reset_pressed)
+	simulation_controls.add_child(seismic_reset_btn)
 
 	rule_preview_dropdown = OptionButton.new()
 	rule_preview_dropdown.custom_minimum_size = Vector2(0, 40)
@@ -703,14 +892,13 @@ func _build_app_view() -> void:
 	rule_preview_dropdown.item_selected.connect(_on_rule_preview_selected)
 	left_vbox.add_child(rule_preview_dropdown)
 
+	# CENTER — 3D workspace
 	var viewport_panel := PanelContainer.new()
 	viewport_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	viewport_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	var vp_style := StyleBoxFlat.new()
-	vp_style.bg_color = Color("#f8fafc")
-	vp_style.border_color = COLOR_BORDER
-	vp_style.set_border_width_all(1)
-	set_all_corners(vp_style, 8)
+	var vp_style := _style_box(Color("#f6fbff"), Color("#dce9f7"), 1, 12, 0)
+	vp_style.shadow_color = Color(0.05, 0.16, 0.34, 0.045)
+	vp_style.shadow_size = 8
 	viewport_panel.add_theme_stylebox_override("panel", vp_style)
 	main_hbox.add_child(viewport_panel)
 
@@ -721,104 +909,143 @@ func _build_app_view() -> void:
 	_build_viewport_3d(vp_stack)
 
 	vp_label = Label.new()
-	vp_label.text = "input parameters to generate structure.."
+	vp_label.text = "Enter structural parameters and click “Generate Structure” to begin."
 	vp_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vp_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	vp_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	vp_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	vp_label.add_theme_font_override("font", font_inter)
-	vp_label.add_theme_font_size_override("font_size", 16)
-	vp_label.add_theme_color_override("font_color", COLOR_MUTED)
+	vp_label.add_theme_font_size_override("font_size", 14)
+	vp_label.add_theme_color_override("font_color", Color("#64748b"))
 	vp_stack.add_child(vp_label)
 
 	var controls_panel := PanelContainer.new()
-	controls_panel.custom_minimum_size = Vector2(230, 175)
-	var ctrl_style := StyleBoxFlat.new()
-	ctrl_style.bg_color = COLOR_WHITE
-	ctrl_style.border_color = COLOR_BORDER
-	ctrl_style.set_border_width_all(1)
-	set_all_corners(ctrl_style, 8)
-	ctrl_style.content_margin_left = 14
-	ctrl_style.content_margin_right = 14
-	ctrl_style.content_margin_top = 14
-	ctrl_style.content_margin_bottom = 14
+	controls_panel.custom_minimum_size = Vector2(205, 246)
+	var ctrl_style := _style_box(Color(1, 1, 1, 0.92), Color("#e0e9f4"), 1, 10, 14)
+	ctrl_style.shadow_color = Color(0.04, 0.16, 0.34, 0.05)
+	ctrl_style.shadow_size = 6
 	controls_panel.add_theme_stylebox_override("panel", ctrl_style)
-	controls_panel.position = Vector2(16, 16)
+	controls_panel.position = Vector2(14, 14)
 	vp_stack.add_child(controls_panel)
 
 	var ctrl_vbox := VBoxContainer.new()
 	ctrl_vbox.add_theme_constant_override("separation", 4)
+	controls_panel.add_child(ctrl_vbox)
+
 	var ctrl_title := Label.new()
-	ctrl_title.text = "Camera Controls:"
+	ctrl_title.text = "◎  Camera Controls"
 	ctrl_title.add_theme_font_override("font", font_poppins_bold)
-	ctrl_title.add_theme_font_size_override("font_size", 18)
+	ctrl_title.add_theme_font_size_override("font_size", 16)
 	ctrl_title.add_theme_color_override("font_color", COLOR_BLUE)
 	ctrl_vbox.add_child(ctrl_title)
 
 	var ctrl_desc := Label.new()
-	ctrl_desc.text = "W - forward\nA - left\nS - backward\nD - right\nC - down\nSpace - up\nScroll - zoom\n\nLeft Click - interact\nRight Click - angle control"
+	ctrl_desc.text = "W – forward\nA – left\nS – backward\nD – right\nC – down\nSpace – up\nScroll – zoom\n\nLeft Click – interact\nRight Click – angle control"
 	ctrl_desc.add_theme_font_override("font", font_inter)
-	ctrl_desc.add_theme_font_size_override("font_size", 16)
-	ctrl_desc.add_theme_color_override("font_color", COLOR_MUTED)
+	ctrl_desc.add_theme_font_size_override("font_size", 13)
+	ctrl_desc.add_theme_color_override("font_color", Color("#3d5270"))
 	ctrl_vbox.add_child(ctrl_desc)
-	controls_panel.add_child(ctrl_vbox)
 
+
+	# RIGHT COLUMN
 	var right_col := VBoxContainer.new()
-	right_col.custom_minimum_size = Vector2(260, 0)
+	right_col.custom_minimum_size = Vector2(340, 0)
 	right_col.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	right_col.add_theme_constant_override("separation", 16)
+	right_col.add_theme_constant_override("separation", 12)
 	main_hbox.add_child(right_col)
 
-	right_col.add_child(_app_section_heading("SIMULATION PREVIEW"))
+	var preview_card := PanelContainer.new()
+	preview_card.custom_minimum_size = Vector2(0, 300)
+	var preview_card_style := _style_box(COLOR_WHITE, Color("#e0e9f4"), 1, 12, 14)
+	preview_card_style.shadow_color = Color(0.04, 0.16, 0.34, 0.045)
+	preview_card_style.shadow_size = 7
+	preview_card.add_theme_stylebox_override("panel", preview_card_style)
+	right_col.add_child(preview_card)
+
+	var preview_vbox := VBoxContainer.new()
+	preview_vbox.add_theme_constant_override("separation", 10)
+	preview_card.add_child(preview_vbox)
+	var preview_title := Label.new()
+	preview_title.text = "◉   Simulation Preview"
+	preview_title.add_theme_font_override("font", font_poppins_bold)
+	preview_title.add_theme_font_size_override("font_size", 16)
+	preview_title.add_theme_color_override("font_color", COLOR_BLUE)
+	preview_vbox.add_child(preview_title)
 
 	var preview_box := PanelContainer.new()
-	preview_box.custom_minimum_size = Vector2(0, 140)
-	var prev_style := StyleBoxFlat.new()
-	prev_style.bg_color = Color("#e0f2fe")
-	set_all_corners(prev_style, 8)
+	preview_box.custom_minimum_size = Vector2(0, 180)
+	preview_box.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var prev_style := _style_box(Color("#eaf6ff"), Color("#d8eafa"), 1, 10, 0)
 	preview_box.add_theme_stylebox_override("panel", prev_style)
-
 	_build_preview_3d(preview_box)
-	right_col.add_child(preview_box)
+	preview_vbox.add_child(preview_box)
 
-	right_col.add_child(_app_section_heading("ITERATION RECORDS"))
+	var iteration_card := PanelContainer.new()
+	iteration_card.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var iteration_card_style := _style_box(COLOR_WHITE, Color("#e0e9f4"), 1, 12, 14)
+	iteration_card_style.shadow_color = Color(0.04, 0.16, 0.34, 0.045)
+	iteration_card_style.shadow_size = 7
+	iteration_card.add_theme_stylebox_override("panel", iteration_card_style)
+	right_col.add_child(iteration_card)
 
-	var iter_label := Label.new()
-	iter_label.text = "No iterations yet"
-	iter_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	iter_label.add_theme_font_override("font", font_inter)
-	iter_label.add_theme_font_size_override("font_size", 18)
-	iter_label.add_theme_color_override("font_color", COLOR_MUTED)
-	right_col.add_child(iter_label)
-	iteration_label = iter_label
-	iter_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	iter_label.add_theme_font_size_override("font_size", 14)
+	var iteration_vbox := VBoxContainer.new()
+	iteration_vbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	iteration_vbox.add_theme_constant_override("separation", 10)
+	iteration_card.add_child(iteration_vbox)
+
+	var iteration_title := Label.new()
+	iteration_title.text = "◴   Iteration Records"
+	iteration_title.add_theme_font_override("font", font_poppins_bold)
+	iteration_title.add_theme_font_size_override("font_size", 16)
+	iteration_title.add_theme_color_override("font_color", COLOR_BLUE)
+	iteration_vbox.add_child(iteration_title)
+
+	iteration_label = Label.new()
+	iteration_label.text = "No iterations yet\nRun a simulation to see results here."
+	iteration_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	iteration_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	iteration_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	iteration_label.custom_minimum_size = Vector2(0, 88)
+	iteration_label.add_theme_font_override("font", font_inter)
+	iteration_label.add_theme_font_size_override("font_size", 13)
+	iteration_label.add_theme_color_override("font_color", COLOR_MUTED)
+	iteration_vbox.add_child(iteration_label)
 
 	var iteration_scroll := ScrollContainer.new()
 	iteration_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	iteration_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	right_col.add_child(iteration_scroll)
+	iteration_vbox.add_child(iteration_scroll)
+
 	iteration_list = VBoxContainer.new()
 	iteration_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	iteration_list.add_theme_constant_override("separation", 6)
 	iteration_scroll.add_child(iteration_list)
 
+	# Clear Previous Runs button
 	clean_runs_button = Button.new()
-	clean_runs_button.text = "Clean Previous Runs"
-	clean_runs_button.custom_minimum_size = Vector2(0, 32)
+	clean_runs_button.text = "⌫   Clear Previous Runs"
+	clean_runs_button.custom_minimum_size = Vector2(0, 42)
 	clean_runs_button.focus_mode = Control.FOCUS_NONE
 	clean_runs_button.add_theme_font_override("font", font_inter)
 	clean_runs_button.add_theme_font_size_override("font_size", 13)
-	clean_runs_button.add_theme_color_override("font_color", COLOR_LINK)
-	clean_runs_button.add_theme_color_override("font_hover_color", COLOR_MUTED)
-	clean_runs_button.add_theme_color_override("font_disabled_color", COLOR_BORDER)
-	var clean_style := _style_box(COLOR_WHITE, COLOR_BORDER, 1, 6)
-	clean_runs_button.add_theme_stylebox_override("normal", clean_style)
-	clean_runs_button.add_theme_stylebox_override("hover", _style_box(COLOR_WHITE, COLOR_LINK, 1, 6))
-	clean_runs_button.add_theme_stylebox_override("pressed", clean_style)
-	clean_runs_button.add_theme_stylebox_override("disabled", clean_style)
+	clean_runs_button.add_theme_color_override("font_color", COLOR_MUTED)
+	clean_runs_button.add_theme_color_override("font_hover_color", Color("#dc2626"))
+	clean_runs_button.add_theme_color_override("font_pressed_color", Color("#b91c1c"))
+	clean_runs_button.add_theme_color_override("font_disabled_color", Color("#b8c4d4"))
+	clean_runs_button.add_theme_stylebox_override(
+		"normal", _style_box(Color("#ffffff"), Color("#dfe7f1"), 1, 8, 8)
+	)
+	clean_runs_button.add_theme_stylebox_override(
+		"hover", _style_box(Color("#fff7f7"), Color("#fca5a5"), 1, 8, 8)
+	)
+	clean_runs_button.add_theme_stylebox_override(
+		"pressed", _style_box(Color("#fff1f1"), Color("#ef4444"), 1, 8, 8)
+	)
+	clean_runs_button.add_theme_stylebox_override(
+		"disabled", _style_box(Color("#f8fafc"), Color("#e2e8f0"), 1, 8, 8)
+	)
 	clean_runs_button.pressed.connect(_on_clean_runs_pressed)
-	right_col.add_child(clean_runs_button)
+	iteration_vbox.add_child(clean_runs_button)
 
 	clean_runs_dialog = ConfirmationDialog.new()
 	clean_runs_dialog.title = "Clean Previous Runs"
@@ -826,40 +1053,83 @@ func _build_app_view() -> void:
 	clean_runs_dialog.confirmed.connect(_on_clean_runs_confirmed)
 	app_view_container.add_child(clean_runs_dialog)
 
-	var terminal_drag_handle := ColorRect.new()
-	terminal_drag_handle.color = COLOR_BORDER
-	terminal_drag_handle.custom_minimum_size = Vector2(0, 6)
-	terminal_drag_handle.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	terminal_drag_handle.mouse_default_cursor_shape = Control.CURSOR_VSIZE
-	terminal_drag_handle.mouse_filter = Control.MOUSE_FILTER_STOP
-	terminal_drag_handle.gui_input.connect(_on_terminal_drag_handle_input)
-	workspace_vbox.add_child(terminal_drag_handle)
-
+	# Bottom terminal panel
 	terminal_panel = PanelContainer.new()
-	terminal_panel.custom_minimum_size = Vector2(0, 150)
+	terminal_panel.custom_minimum_size = Vector2(0, 160)
 	terminal_panel.size_flags_vertical = Control.SIZE_FILL
 	terminal_panel.clip_contents = true
-	var term_style := StyleBoxFlat.new()
-	term_style.bg_color = COLOR_WHITE
-	term_style.border_color = COLOR_BORDER
-	term_style.border_width_top = 1
-	terminal_panel.add_theme_stylebox_override("panel", term_style)
+	var terminal_outer_style := _style_box(Color("#ffffff"), Color("#e0e9f4"), 1, 12, 12)
+	terminal_panel.add_theme_stylebox_override("panel", terminal_outer_style)
 	workspace_vbox.add_child(terminal_panel)
 
-	var term_margin := MarginContainer.new()
-	term_margin.add_theme_constant_override("margin_left", 0)
-	term_margin.add_theme_constant_override("margin_top", 10)
-	term_margin.add_theme_constant_override("margin_bottom", 10)
-	terminal_panel.add_child(term_margin)
+	var terminal_outer := VBoxContainer.new()
+	terminal_outer.add_theme_constant_override("separation", 5)
+	terminal_panel.add_child(terminal_outer)
+
+	# Drag handle: drag upward to maximize, downward to minimize.
+	var terminal_drag_handle := Control.new()
+	terminal_drag_handle.custom_minimum_size = Vector2(0, 12)
+	terminal_drag_handle.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	terminal_drag_handle.mouse_default_cursor_shape = Control.CURSOR_VSIZE
+	terminal_drag_handle.tooltip_text = "Drag up or down to resize Terminal"
+	terminal_drag_handle.gui_input.connect(_on_terminal_drag_handle_input)
+	terminal_outer.add_child(terminal_drag_handle)
+
+	var grip_center := CenterContainer.new()
+	grip_center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	grip_center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	terminal_drag_handle.add_child(grip_center)
+
+	var grip := ColorRect.new()
+	grip.custom_minimum_size = Vector2(54, 4)
+	grip.color = Color("#c7d2e0")
+	grip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	grip_center.add_child(grip)
+
+	var terminal_header := HBoxContainer.new()
+	terminal_header.add_theme_constant_override("separation", 8)
+	terminal_outer.add_child(terminal_header)
+
+	var terminal_title := Label.new()
+	terminal_title.text = "▣   Terminal"
+	terminal_title.add_theme_font_override("font", font_poppins_bold)
+	terminal_title.add_theme_font_size_override("font_size", 15)
+	terminal_title.add_theme_color_override("font_color", COLOR_NAVY)
+	terminal_header.add_child(terminal_title)
+	var term_header_spacer := Control.new()
+	term_header_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	terminal_header.add_child(term_header_spacer)
+
+	var clear_btn := Button.new()
+	clear_btn.text = "⌫  Clear"
+	clear_btn.flat = true
+	clear_btn.focus_mode = Control.FOCUS_NONE
+	clear_btn.add_theme_font_override("font", font_inter)
+	clear_btn.add_theme_font_size_override("font_size", 12)
+	clear_btn.add_theme_color_override("font_color", COLOR_MUTED)
+	clear_btn.pressed.connect(_reset_terminal)
+	terminal_header.add_child(clear_btn)
+
+	var console_panel := PanelContainer.new()
+	console_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	console_panel.add_theme_stylebox_override("panel", _style_box(Color("#fbfdff"), Color("#d9e4f2"), 1, 10, 10))
+	terminal_outer.add_child(console_panel)
+
+	var console_margin := MarginContainer.new()
+	console_margin.add_theme_constant_override("margin_left", 12)
+	console_margin.add_theme_constant_override("margin_right", 12)
+	console_margin.add_theme_constant_override("margin_top", 8)
+	console_margin.add_theme_constant_override("margin_bottom", 8)
+	console_panel.add_child(console_margin)
 
 	term_scroll = ScrollContainer.new()
 	term_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	term_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
-	term_margin.add_child(term_scroll)
+	console_margin.add_child(term_scroll)
 
 	term_vbox = VBoxContainer.new()
 	term_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	term_vbox.add_theme_constant_override("separation", 2)
+	term_vbox.add_theme_constant_override("separation", 6)
 	term_scroll.add_child(term_vbox)
 
 	_reset_terminal()
@@ -879,25 +1149,23 @@ func _app_input_field(parent: Control, label_text: String, default_value: String
 	var lbl := Label.new()
 	lbl.text = label_text
 	lbl.add_theme_font_override("font", font_inter)
-	lbl.add_theme_font_size_override("font_size", 18)
-	lbl.add_theme_color_override("font_color", COLOR_TEXT)
+	lbl.add_theme_font_size_override("font_size", 13)
+	lbl.add_theme_color_override("font_color", Color("#223550"))
 	vbox.add_child(lbl)
 
 	var line_edit := LineEdit.new()
 	line_edit.text = default_value
-	line_edit.custom_minimum_size = Vector2(0, 38)
+	line_edit.caret_blink = true
+	line_edit.caret_blink_interval = 0.55
+	line_edit.custom_minimum_size = Vector2(0, 40)
 	line_edit.add_theme_font_override("font", font_inter)
-	line_edit.add_theme_font_size_override("font_size", 18)
-	line_edit.add_theme_color_override("font_color", COLOR_MUTED)
+	line_edit.add_theme_font_size_override("font_size", 13)
+	line_edit.add_theme_color_override("font_color", Color("#223550"))
 
-	var le_style := StyleBoxFlat.new()
-	le_style.bg_color = COLOR_WHITE
-	le_style.border_color = COLOR_BORDER
-	le_style.set_border_width_all(1)
-	set_all_corners(le_style, 6)
-	le_style.content_margin_left = 12
-	line_edit.add_theme_stylebox_override("normal", le_style)
-	line_edit.add_theme_stylebox_override("focus", le_style)
+	var normal_style := _style_box(Color("#ffffff"), Color("#d8e2ef"), 1, 7, 10)
+	var focus_style := _style_box(Color("#ffffff"), Color("#5e9cf8"), 1, 7, 10)
+	line_edit.add_theme_stylebox_override("normal", normal_style)
+	line_edit.add_theme_stylebox_override("focus", focus_style)
 	vbox.add_child(line_edit)
 
 	parent.add_child(vbox)
@@ -987,7 +1255,7 @@ func _build_preview_3d(parent: Control) -> void:
 	preview_hint.text = "Select an iteration to preview its seismic performance"
 	parent.add_child(preview_hint)
 
-func _validate_inputs() -> Dictionary:
+func _validate_inputs(include_simulation: bool = true) -> Dictionary:
 	var errors: Array[String] = []
 	var params := {}
 
@@ -1021,30 +1289,83 @@ func _validate_inputs() -> Dictionary:
 		errors.append("Story Height must be between 3 and 5 m (got %s)" % story_height_input.text)
 	params["story_height"] = story_height
 
-	var magnitude := float(magnitude_input.text)
-	if magnitude < 1.0 or magnitude > 10.0:
-		errors.append("Magnitude must be between 1 and 10 (got %s)" % magnitude_input.text)
-	params["magnitude"] = magnitude
+	if include_simulation:
+		var magnitude := float(magnitude_input.text)
+		if magnitude < 1.0 or magnitude > 10.0:
+			errors.append("Magnitude must be between 1 and 10 (got %s)" % magnitude_input.text)
+		params["magnitude"] = magnitude
 
-	var duration := float(duration_input.text)
-	if duration < 10.0 or duration > 30.0:
-		errors.append("Duration must be between 10 and 30 secs (got %s)" % duration_input.text)
-	params["duration"] = duration
+		var duration := float(duration_input.text)
+		if duration < 10.0 or duration > 30.0:
+			errors.append("Duration must be between 10 and 30 secs (got %s)" % duration_input.text)
+		params["duration"] = duration
+
 
 	return {"ok": errors.is_empty(), "params": params, "errors": errors}
 
 func _log_terminal(text: String) -> void:
 	if term_vbox == null:
 		return
+
+	var row := HBoxContainer.new()
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_theme_constant_override("separation", 9)
+
+	var display_text := text
+	var status := "success"
+
+	if text.begins_with("ERROR:"):
+		status = "error"
+		display_text = text.trim_prefix("ERROR:").strip_edges()
+	elif text.begins_with("WARNING:"):
+		status = "warning"
+		display_text = text.trim_prefix("WARNING:").strip_edges()
+	elif text == "..." or text.to_lower().contains("running") or text.to_lower().contains("starting"):
+		status = "info"
+
+	# Use the supplied image assets for success/error/warning rows.
+	if status != "info":
+		var icon := TextureRect.new()
+		icon.custom_minimum_size = Vector2(20, 20)
+		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+		match status:
+			"error":
+				icon.texture = tex_terminal_error
+			"warning":
+				icon.texture = tex_terminal_warning
+			_:
+				icon.texture = tex_terminal_success
+
+		row.add_child(icon)
+	else:
+		# Neutral blue dot for in-progress/informational terminal messages.
+		var dot := Label.new()
+		dot.text = "•"
+		dot.custom_minimum_size = Vector2(20, 20)
+		dot.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		dot.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		dot.add_theme_font_override("font", font_poppins_bold)
+		dot.add_theme_font_size_override("font_size", 18)
+		dot.add_theme_color_override("font_color", COLOR_BLUE)
+		row.add_child(dot)
+
 	var line := Label.new()
-	line.text = "> " + text
+	line.text = display_text
 	line.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	line.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	line.add_theme_font_override("font", font_inter)
-	line.add_theme_font_size_override("font_size", 18)
-	line.add_theme_color_override("font_color", COLOR_MUTED)
-	term_vbox.add_child(line)
+	line.add_theme_font_size_override("font_size", 14)
+	# Keep all terminal copy neutral/dark; the icon communicates status.
+	line.add_theme_color_override("font_color", Color("#374151"))
+	row.add_child(line)
+
+	term_vbox.add_child(row)
 	_scroll_terminal_to_bottom()
+
 
 func _scroll_terminal_to_bottom() -> void:
 	if term_scroll == null:
@@ -1056,14 +1377,9 @@ func _reset_terminal() -> void:
 	if term_vbox == null:
 		return
 	_clear_children(term_vbox)
-	var term_title := Label.new()
-	term_title.text = "TERMINAL"
-	term_title.add_theme_font_override("font", font_poppins_bold)
-	term_title.add_theme_font_size_override("font_size", 18)
-	term_title.add_theme_color_override("font_color", COLOR_BLUE)
-	term_vbox.add_child(term_title)
-	_log_terminal("welcome to ProGen")
-	_log_terminal("...")
+	_log_terminal("ProGen terminal ready")
+	_log_terminal("Enter structural parameters, then generate a structure.")
+
 
 func _on_terminal_drag_handle_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
@@ -1076,11 +1392,12 @@ func _on_terminal_drag_handle_input(event: InputEvent) -> void:
 	elif event is InputEventMouseMotion and terminal_drag_active:
 		var delta_y: float = event.global_position.y - terminal_drag_start_mouse_y
 		var new_height: float = terminal_drag_start_height - delta_y
-		var max_height: float = max(150.0, get_viewport_rect().size.y - 300.0)
-		terminal_panel.custom_minimum_size.y = clamp(new_height, 90.0, max_height)
+		var max_height: float = max(220.0, get_viewport_rect().size.y - 220.0)
+		# 62 px is approximately the drag handle + Terminal header.
+		terminal_panel.custom_minimum_size.y = clamp(new_height, 62.0, max_height)
 
 func _on_generate_pressed() -> void:
-	var validation := _validate_inputs()
+	var validation := _validate_inputs(false)
 	if not validation["ok"]:
 		for e in validation["errors"]:
 			_log_terminal("ERROR: %s" % e)
@@ -1102,6 +1419,10 @@ func _on_generate_pressed() -> void:
 	current_topo = topo
 	has_structure = true
 	vp_label.visible = false
+	if structural_controls:
+		structural_controls.visible = false
+	if simulation_controls:
+		simulation_controls.visible = true
 	_stop_live_shake()
 	_clear_preview()
 	structure_display.build(topo)
@@ -1233,7 +1554,8 @@ func _start_python_nltha(params: Dictionary, run_dir: String) -> void:
 		_log_terminal("ERROR: could not start Python/OpenSeesPy")
 		return
 	python_simulation_running = true
-	clean_runs_button.disabled = true
+	if is_instance_valid(clean_runs_button):
+		clean_runs_button.disabled = true
 	python_simulation_started_ms = Time.get_ticks_msec()
 	python_simulation_last_heartbeat_ms = python_simulation_started_ms
 	_log_terminal("closed-loop run started: Iteration 0, then feedback and re-simulation automatically")
@@ -1391,10 +1713,16 @@ func _add_iteration_entry(index: int, record: Dictionary) -> void:
 	if evaluation is Dictionary:
 		for entry in evaluation.get("triggered_rules", []):
 			rules.append(str(int(entry.get("rule", 0))))
+
+	var row := HBoxContainer.new()
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_theme_constant_override("separation", 6)
+
 	var button := Button.new()
 	button.text = "Iteration %d  %s%s" % [index, record.get("overall_status", "?"),
 		("  (rules " + ", ".join(rules) + ")") if not rules.is_empty() else ""]
 	button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	button.focus_mode = Control.FOCUS_NONE
 	button.add_theme_font_override("font", font_inter)
 	button.add_theme_font_size_override("font_size", 14)
@@ -1403,9 +1731,54 @@ func _add_iteration_entry(index: int, record: Dictionary) -> void:
 	button.add_theme_stylebox_override("normal", _style_box(COLOR_PANEL_TINT, COLOR_BORDER, 1, 6, 6))
 	button.add_theme_stylebox_override("hover", _style_box(COLOR_PANEL_TINT, COLOR_BLUE, 1, 6, 6))
 	button.add_theme_stylebox_override("pressed", _style_box(COLOR_PANEL_TINT, COLOR_BLUE, 1, 6, 6))
+
 	var run_dir := current_run_dir
 	button.pressed.connect(func(): _on_iteration_pressed(run_dir, index))
-	iteration_list.add_child(button)
+	row.add_child(button)
+
+	var download_btn := Button.new()
+	download_btn.text = "⇩"
+	download_btn.tooltip_text = "Download iteration %d record" % index
+	download_btn.custom_minimum_size = Vector2(38, 38)
+	download_btn.focus_mode = Control.FOCUS_NONE
+	download_btn.add_theme_font_override("font", font_poppins_bold)
+	download_btn.add_theme_font_size_override("font_size", 18)
+	download_btn.add_theme_color_override("font_color", COLOR_BLUE)
+	download_btn.add_theme_color_override("font_hover_color", COLOR_BLUE)
+	download_btn.add_theme_color_override("font_pressed_color", COLOR_BLUE)
+	download_btn.add_theme_color_override("font_focus_color", COLOR_BLUE)
+	download_btn.add_theme_stylebox_override("normal", _style_box(Color("#f8fbff"), Color("#cfe0ff"), 1, 7, 4))
+	download_btn.add_theme_stylebox_override("hover", _style_box(Color("#eef5ff"), COLOR_BLUE, 1, 7, 4))
+	download_btn.add_theme_stylebox_override("pressed", _style_box(Color("#e5efff"), COLOR_BLUE, 1, 7, 4))
+	download_btn.pressed.connect(func(): _download_iteration_record(run_dir, index))
+	row.add_child(download_btn)
+
+	iteration_list.add_child(row)
+
+func _download_iteration_record(run_dir: String, index: int) -> void:
+	var record_path := run_dir.path_join("iteration_%d" % index).path_join("record.json")
+	var record = _read_json(record_path)
+	if not record is Dictionary:
+		_log_terminal("ERROR: iteration %d record could not be found" % index)
+		return
+
+	var json_text := JSON.stringify(record, "\t")
+	var filename := "ProGen_iteration_%d_record.json" % index
+
+	if OS.has_feature("web"):
+		JavaScriptBridge.download_buffer(json_text.to_utf8_buffer(), filename, "application/json")
+		_log_terminal("downloaded iteration %d record" % index)
+		return
+
+	var save_path := "user://%s" % filename
+	var file := FileAccess.open(save_path, FileAccess.WRITE)
+	if file == null:
+		_log_terminal("ERROR: could not save iteration %d record" % index)
+		return
+	file.store_string(json_text)
+	file.close()
+	_log_terminal("saved iteration %d record to %s" % [index, save_path])
+
 
 func _on_iteration_pressed(run_dir: String, index: int) -> void:
 	var record = _read_json(run_dir.path_join("iteration_%d" % index).path_join("record.json"))
@@ -1734,6 +2107,10 @@ func _on_reset_pressed() -> void:
 	if not python_simulation_running:
 		_clear_iteration_list()
 	has_structure = false
+	if simulation_controls:
+		simulation_controls.visible = false
+	if structural_controls:
+		structural_controls.visible = true
 	current_params = {}
 	current_topo = {}
 	vp_label.visible = true
@@ -1750,6 +2127,115 @@ func _on_rule_preview_selected(index: int) -> void:
 	_log_terminal(
 		"preview: %s -- %s (visual mock-up only; no section data changed, no re-analysis run)" % [rule_label, description]
 	)
+
+func _numbered_feature_card(number: String, title: String, description: String, icon: Texture2D) -> PanelContainer:
+	var card := PanelContainer.new()
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	card.custom_minimum_size = Vector2(0, 178)
+	var st := _style_box(Color(1, 1, 1, 0.94), Color("#d9e7f8"), 1, 13, 22)
+	st.shadow_color = Color(0.04, 0.22, 0.60, 0.055)
+	st.shadow_size = 9
+	card.add_theme_stylebox_override("panel", st)
+	var inner := VBoxContainer.new()
+	inner.add_theme_constant_override("separation", 10)
+	card.add_child(inner)
+	var top := HBoxContainer.new()
+	top.add_theme_constant_override("separation", 12)
+	inner.add_child(top)
+	var num := Label.new()
+	num.text = "  %s  " % number
+	num.add_theme_font_override("font", font_poppins_bold)
+	num.add_theme_font_size_override("font_size", 13)
+	num.add_theme_color_override("font_color", COLOR_BLUE)
+	num.add_theme_stylebox_override("normal", _style_box(COLOR_BLUE_SOFT, COLOR_BLUE_SOFT, 0, 14, 6))
+	top.add_child(num)
+	var icon_rect := TextureRect.new()
+	icon_rect.texture = icon
+	icon_rect.custom_minimum_size = Vector2(34, 34)
+	icon_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	icon_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	top.add_child(icon_rect)
+	inner.add_child(_left_label(title, font_poppins_bold, 18, COLOR_TEXT))
+	var d := _body_label(description, 14)
+	d.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	inner.add_child(d)
+	return card
+
+func _compact_proof_item(icon_text: String, text: String) -> HBoxContainer:
+	var item := HBoxContainer.new()
+	item.custom_minimum_size = Vector2(220, 30)
+	item.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	item.alignment = BoxContainer.ALIGNMENT_CENTER
+	item.add_theme_constant_override("separation", 8)
+
+	var icon := Label.new()
+	icon.text = icon_text
+	icon.custom_minimum_size = Vector2(24, 24)
+	icon.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	icon.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	icon.add_theme_font_override("font", font_poppins_bold)
+	icon.add_theme_font_size_override("font_size", 15)
+	icon.add_theme_color_override("font_color", COLOR_BLUE)
+	item.add_child(icon)
+
+	var label := Label.new()
+	label.text = text + "  ✓"
+	label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	label.add_theme_font_override("font", font_inter)
+	label.add_theme_font_size_override("font_size", 12)
+	label.add_theme_color_override("font_color", COLOR_TEXT)
+	item.add_child(label)
+	return item
+
+func _simple_stage_card(icon_text: String, title: String, subtitle: String, bullets: Array) -> PanelContainer:
+	var card := PanelContainer.new()
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	card.custom_minimum_size = Vector2(0, 250)
+	var st := _style_box(Color(1, 1, 1, 0.96), Color("#d9e7f8"), 1, 13, 26)
+	st.shadow_color = Color(0.04, 0.22, 0.60, 0.06)
+	st.shadow_size = 9
+	card.add_theme_stylebox_override("panel", st)
+
+	var inner := VBoxContainer.new()
+	inner.add_theme_constant_override("separation", 10)
+	card.add_child(inner)
+
+	# Left-aligned icon + title on one line.
+	var top := HBoxContainer.new()
+	top.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	top.alignment = BoxContainer.ALIGNMENT_BEGIN
+	top.add_theme_constant_override("separation", 10)
+	inner.add_child(top)
+
+	var icon := Label.new()
+	icon.text = icon_text
+	icon.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	icon.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	icon.custom_minimum_size = Vector2(42, 42)
+	icon.add_theme_font_override("font", font_poppins_bold)
+	icon.add_theme_font_size_override("font_size", 22)
+	icon.add_theme_color_override("font_color", COLOR_BLUE)
+	icon.add_theme_stylebox_override("normal", _style_box(COLOR_BLUE_SOFT, COLOR_BLUE_SOFT, 0, 21))
+	top.add_child(icon)
+
+	var title_label := Label.new()
+	title_label.text = title
+	title_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	title_label.add_theme_font_override("font", font_poppins_bold)
+	title_label.add_theme_font_size_override("font_size", 19)
+	title_label.add_theme_color_override("font_color", COLOR_TEXT)
+	top.add_child(title_label)
+
+	var subtitle_label := _left_label(subtitle, font_inter, 14, COLOR_MUTED)
+	subtitle_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	subtitle_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	inner.add_child(subtitle_label)
+
+	for bullet in bullets:
+		var bullet_label := _left_label("•  %s" % bullet, font_inter, 13, COLOR_MUTED)
+		inner.add_child(bullet_label)
+	return card
+
 
 func _feature_card(title: String, description: String, icon: Texture2D) -> PanelContainer:
 	var card := PanelContainer.new()
@@ -1960,6 +2446,14 @@ func _load_font(path: String) -> FontFile:
 
 func _load_texture(path: String) -> Texture2D:
 	return load(path) as Texture2D
+
+func _load_texture_first(paths: Array[String]) -> Texture2D:
+	for path in paths:
+		if ResourceLoader.exists(path):
+			var texture := load(path) as Texture2D
+			if texture:
+				return texture
+	return null
 
 func _clear_children(node: Node) -> void:
 	for child in node.get_children():
