@@ -1,11 +1,6 @@
 class_name StructureGenerator
 extends RefCounted
 
-## Pure topology logic: turns validated structural params into a beam-column
-## grid. Mirrors the node/column/beam conventions in model_builder.py (repo
-## root) so the two pipelines stay conceptually parallel, translated into
-## Godot's Y-up convention: plan X/Y -> world X/Z, story height -> world Y.
-
 static func generate(params: Dictionary) -> Dictionary:
 	var floor_count: int = params["floor_count"]
 	var bay_count_x: int = params["bay_count_x"]
@@ -18,7 +13,7 @@ static func generate(params: Dictionary) -> Dictionary:
 	var n_nodes_y := bay_count_y + 1
 	var n_levels := floor_count + 1
 
-	var nodes: Dictionary = {}  # Vector3i(level, row, col) -> Vector3 world pos
+	var nodes: Dictionary = {}
 	var base_keys: Array = []
 
 	for level in range(n_levels):
@@ -32,7 +27,6 @@ static func generate(params: Dictionary) -> Dictionary:
 				if level == 0:
 					base_keys.append(key)
 
-	# Columns: one per grid point per story, level -> level+1.
 	var columns: Array = []
 	for level in range(floor_count):
 		for row in range(n_nodes_y):
@@ -42,7 +36,6 @@ static func generate(params: Dictionary) -> Dictionary:
 					Vector3i(level + 1, row, col),
 				])
 
-	# Beams: full X/Y grid at every level 1..floor_count. No beams at level 0.
 	var beams: Array = []
 	for level in range(1, n_levels):
 		for row in range(n_nodes_y):

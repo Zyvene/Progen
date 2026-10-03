@@ -1,79 +1,62 @@
 # Topology Schema
 
-This is the contract between PCG (topology generation, not built yet)
-and this module (topology &rarr; OpenSeesPy model). It is implemented as
-`schema.BuildingTopology`.
+The JSON contract between Godot (or any caller) and `simulation.py`,
+implemented by `input_management.BuildingTopology` and
+`procedural_content_generation.generate_topology_grid`.
 
-## Input fields
+## Building fields
 
-| Field | Type | Units | Spec range | Notes |
+| Field | Type | Units | Range | Notes |
 |---|---|---|---|---|
-| `building_id` | int | - | - | unique ID |
-| `floor_count` | int | stories | 1 - 10 | number of stories above grade |
-| `story_height` | float | ft | building-specific | uniform across all stories |
-| `bay_count_x` | int | bays | 1 - 10 | bays in the X (plan) direction |
-| `bay_width_x` | float | ft | building-specific | uniform across all X bays |
-| `bay_count_y` | int | bays | 1 - 10 | bays in the Y (plan) direction |
-| `bay_width_y` | float | ft | building-specific | uniform across all Y bays |
-| `floor_load_kpa` | float | kN/m^2 | 2 - 10 | typical floor panel load; not in the sample dataset, defaults to 6.0 |
-| `roof_load_kpa` | float | kN/m^2 | 1 - 5 | roof panel load; not in the sample dataset, defaults to 3.0 |
+| `building_id` | int | - | - | identifier |
+| `units` | str | - | `"ft"` or `"m"` | length units of the fields below; Godot sends `"m"`; default `"ft"` |
+| `floor_count` | int | stories | 1 - 10 | |
+| `story_height` | float | `units` | 3 - 5 m (Godot) | uniform |
+| `bay_count_x` | int | bays | 1 - 10 | |
+| `bay_width_x` | float | `units` | 3 - 9 m (Godot) | uniform |
+| `bay_count_y` | int | bays | 1 - 10 | |
+| `bay_width_y` | float | `units` | 3 - 9 m (Godot) | uniform |
+| `floor_load_kpa` | float | kN/m² | 2 - 10 | Godot fixes 6.0 |
+| `roof_load_kpa` | float | kN/m² | 1 - 5 | Godot fixes 3.0 |
 
-`regular_buildings.xlsx` already matches the first 7 columns 1:1
-(`Building_ID`, `Floor_Count`, `Story_Height`, `Bay_Count_X`,
-`Bay_Width_X`, `Bay_Count_Y`, `Bay_Width_Y`) — see `sample_data.py`.
+Internally lengths are stored in feet and converted to meters
+(`FEET_TO_M`); the OpenSees model uses kN, m, s. Godot also writes
+`magnitude` and `duration` into `input.json` for the record; `simulation.py`
+reads those from its command-line flags.
 
-**Units assumption:** geometry fields are stored in feet, per the
-convention already established in `structure_data.gd` in the
-LSDSE-Godot-Prototype repo ("All coordinates are in feet"). This module
-converts to meters internally (`schema.FEET_TO_M`) so the full model
-(geometry + kN/m^2 loads + GPa material) lives in one consistent SI
-system: **kN, m**. If the true source units differ, only that one
-constant needs to change.
+## Model state (optional fields)
 
-**Regularity assumption:** this schema describes *regular* buildings
-only — a single uniform story height and uniform, constant bay widths
-in each direction, matching both the task brief ("regular buildings")
-and the dataset's structure. Irregular story heights or bay widths
-per-story would need a schema extension (e.g. lists instead of scalars).
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `member_sections` | object | every member `"W12X26"` | member id -> W-section name from `w_sections.json` |
+| `braces` | array | `[]` | X-braces: `{"story", "axis", "line", "bay", "section"}` |
+| `struts` | array | `[]` | mid-height struts: `{"story", "axis", "line", "bay", "section"}` |
+
+- **Member id:** `"l,r,c|l,r,c"` of its two grid nodes, e.g. column
+  `"0,1,1|1,1,1"`, X-beam `"1,0,0|1,0,1"`, Y-beam `"1,0,0|1,1,0"`.
+- **axis** `"x"`: a frame along X on grid row `line`, between columns `bay`
+  and `bay + 1`. **axis** `"y"`: a frame along Y on grid column `line`, between
+  rows `bay` and `bay + 1`. `story` is 1 - `floor_count`.
+- `section` defaults to the starting section. Invalid stories, lines, bays,
+  axes or section names are rejected.
 
 ## Derived geometry
 
-- `n_nodes_x = bay_count_x + 1`, `n_nodes_y = bay_count_y + 1`
-- `n_levels = floor_count + 1` (includes the base, level 0)
-- Node grid: `n_levels * n_nodes_x * n_nodes_y` nodes total
-- Node tag: `level * (n_nodes_x * n_nodes_y) + row * n_nodes_x + col + 1`
+- `n_nodes_x = bay_count_x + 1`, `n_nodes_y = bay_count_y + 1`, `n_levels = floor_count + 1`
+- Grid node tag: `level * (n_nodes_x * n_nodes_y) + row * n_nodes_x + col + 1`
+- Strut mid-height nodes get tags after the grid nodes and split both columns
+  into two elements.
 
-## Material (Table 2 — AK Steel Grade 25)
+## Connectivity
 
-| Property | Value |
-|---|---|
-| E (modulus) | 200 GPa |
-| Fy (min. yield) | 170 MPa |
-| Poisson's ratio | 0.30 (assumed; not given by Table 2) |
+- **Columns:** `(level, row, col) -> (level + 1, row, col)`, P-Delta transformation.
+- **Beams:** full grid at levels 1 - `floor_count`, X- and Y-direction.
+- **Braces:** two diagonals per braced bay, `Truss` elements.
+- **Base:** every level-0 node fully fixed.
 
-## Section properties
+## Material and sections
 
-**Not yet available.** PCG (the sizing module) hasn't shipped a section
-catalog, so `schema.SectionProps` is a single nominal placeholder
-(`A`, `Iz`, `Iy`, `J`) applied to every beam and column in every
-building. This is explicitly flagged as a placeholder in the code —
-swap it for real per-element section assignment once PCG exists.
-
-## Connectivity rules
-
-- **Columns:** one per grid point per story, connecting
-  `(level, row, col) -> (level+1, row, col)`.
-- **Beams:** a complete grid at every level from 1 (first floor) through
-  `floor_count` (roof) — X-direction beams connecting `(col, col+1)` at
-  each row, and Y-direction beams connecting `(row, row+1)` at each col.
-  Level 0 (the base) has no beams.
-- **Base fixity:** every level-0 node is fully fixed
-  (`fix tag 1 1 1 1 1 1`) — a simple fixed-base idealization.
-
-## Loads
-
-Floor/roof panel loads (kN/m^2) are converted to distributed beam loads
-(kN/m) via tributary width and applied with `eleLoad -type -beamUniform`.
-See `loads.py` docstring for the exact tributary-width and load-path
-assumptions (one-way load path onto X-direction beams only — documented
-there since it's a modeling choice, not part of the schema itself).
+See `README.md` (Model) and `w_sections.json`. Section axes: flange width
+along the element's local y, depth along local z; columns use
+vecxz = (1, 0, 0) (web parallel to global X), beams and struts use
+vecxz = (0, 0, 1).

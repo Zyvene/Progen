@@ -1,23 +1,7 @@
-"""
-validation.py
-==============
-Checks on a BuiltModel before it gets handed to OpenSeesPy for analysis. The checks are:
-    1. No orphaned nodes (every node touches at least one element, or is
-       a fixed base node).
-    2. Connectivity is complete:
-         - every non-base node is reachable from a base node by walking
-           the element graph (the frame is one connected structure, not
-           several disjoint pieces).
-         - every grid point at every level has a column below/above (as
-           appropriate) and a full beam grid at every floor level, i.e.
-           node count and element count match what the topology implies.
-    3. Every base node is actually fixed (no floating "ground" nodes).
-"""
-
 from dataclasses import dataclass, field
 from typing import List
 
-from schema import BuildingTopology
+from input_management import BuildingTopology
 
 
 @dataclass
@@ -38,18 +22,19 @@ class ValidationResult:
 
 def validate_model(built) -> ValidationResult:
     topology: BuildingTopology = built.topology
+    grid = built.grid
     errors: List[str] = []
     warnings: List[str] = []
 
     all_node_tags = set(built.node_tags.values())
-    n_nodes_expected = topology.n_levels * topology.n_nodes_x * topology.n_nodes_y
+    n_mid_nodes = len(grid.mid_node_coords_m)
+    n_nodes_expected = topology.n_levels * topology.n_nodes_x * topology.n_nodes_y + n_mid_nodes
     if len(all_node_tags) != n_nodes_expected:
         errors.append(
             f"expected {n_nodes_expected} nodes, found {len(all_node_tags)}"
         )
 
-    # -- element counts vs. what the grid implies --------------------------
-    n_cols_expected = topology.floor_count * topology.n_nodes_x * topology.n_nodes_y
+    n_cols_expected = topology.floor_count * topology.n_nodes_x * topology.n_nodes_y + n_mid_nodes
     if len(built.column_elements) != n_cols_expected:
         errors.append(
             f"expected {n_cols_expected} column elements, "
@@ -57,8 +42,8 @@ def validate_model(built) -> ValidationResult:
         )
 
     n_beams_per_level = (
-        topology.n_nodes_y * (topology.n_nodes_x - 1)  # X-direction
-        + topology.n_nodes_x * (topology.n_nodes_y - 1)  # Y-direction
+        topology.n_nodes_y * (topology.n_nodes_x - 1)
+        + topology.n_nodes_x * (topology.n_nodes_y - 1)
     )
     n_beams_expected = n_beams_per_level * topology.floor_count
     if len(built.beam_elements) != n_beams_expected:
@@ -67,7 +52,15 @@ def validate_model(built) -> ValidationResult:
             f"found {len(built.beam_elements)}"
         )
 
-    # -- base fixity ---------------------------------------------------------
+    if len(built.brace_elements) != 2 * len(grid.braces):
+        errors.append(
+            f"expected {2 * len(grid.braces)} brace elements, found {len(built.brace_elements)}"
+        )
+    if len(built.strut_elements) != len(grid.struts):
+        errors.append(
+            f"expected {len(grid.struts)} strut elements, found {len(built.strut_elements)}"
+        )
+
     expected_base_nodes = topology.n_nodes_x * topology.n_nodes_y
     if len(built.base_node_tags) != expected_base_nodes:
         errors.append(
@@ -75,9 +68,11 @@ def validate_model(built) -> ValidationResult:
             f"found {len(built.base_node_tags)}"
         )
 
-    # -- orphaned nodes + connectivity (graph walk) ---------------------------
+    all_elements = (
+        built.column_elements + built.beam_elements + built.brace_elements + built.strut_elements
+    )
     adjacency = {tag: set() for tag in all_node_tags}
-    for _ele_tag, i_tag, j_tag in built.column_elements + built.beam_elements:
+    for _ele_tag, i_tag, j_tag in all_elements:
         adjacency.setdefault(i_tag, set()).add(j_tag)
         adjacency.setdefault(j_tag, set()).add(i_tag)
 
@@ -88,7 +83,6 @@ def validate_model(built) -> ValidationResult:
     if orphaned:
         errors.append(f"{len(orphaned)} orphaned node(s) with no elements: {orphaned}")
 
-    # BFS from base nodes to confirm the whole frame is one connected piece
     visited = set()
     frontier = list(built.base_node_tags)
     visited.update(frontier)
@@ -108,8 +102,7 @@ def validate_model(built) -> ValidationResult:
             f"through the element graph: {sorted(unreachable)}"
         )
 
-    # -- loads sanity check (warning only) ------------------------------------
-    if getattr(built, "loaded_beam_tags", None) is not None:
+    if getattr(built, "loaded_beam_tags", None):
         for level, tags in built.loaded_beam_tags.items():
             if not tags:
                 warnings.append(f"level {level}: no beams received panel load")

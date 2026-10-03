@@ -1,0 +1,62 @@
+{
+  "status": "completed",
+  "run_key": "{\"bay_count_x\": 3.0, \"bay_count_y\": 3.0, \"bay_width_x\": 6.0, \"bay_width_y\": 6.0, \"duration\": 15.0, \"floor_count\": 4.0, \"floor_load_kpa\": 6.0, \"magnitude\": 5.0, \"model_state\": {}, \"roof_load_kpa\": 3.0, \"story_height\": 3.5}",
+  "tool_fingerprint": "c765f656ec173c1ca740882e7910f8e2b230bb0306f451cb6abb901ac44321dc",
+  "replaced_runs": [],
+  "inputs": {
+    "source_motion": "stochastic",
+    "input_magnitude": 5.0,
+    "input_duration_s": 15.0,
+    "input_pga_g": 0.0487,
+    "record_length_s": 25.28
+  },
+  "max_feedback_iterations": 10,
+  "iterations_completed": 5,
+  "iterations": [
+    {
+      "iteration": 0,
+      "overall_status": "FAIL",
+      "collapse_phase": null,
+      "triggered_rules": [
+        1
+      ],
+      "actions_applied": 0
+    },
+    {
+      "iteration": 1,
+      "overall_status": "FAIL",
+      "collapse_phase": null,
+      "triggered_rules": [
+        1
+      ],
+      "actions_applied": 38
+    },
+    {
+      "iteration": 2,
+      "overall_status": "FAIL",
+      "collapse_phase": null,
+      "triggered_rules": [
+        1
+      ],
+      "actions_applied": 33
+    },
+    {
+      "iteration": 3,
+      "overall_status": "FAIL",
+      "collapse_phase": null,
+      "triggered_rules": [
+        1
+      ],
+      "actions_applied": 19
+    },
+    {
+      "iteration": 4,
+      "overall_status": "PASS",
+      "collapse_phase": null,
+      "triggered_rules": [],
+      "actions_applied": 2
+    }
+  ],
+  "stop_reason": "all evaluation checks pass",
+  "final_status": "PASS"
+}

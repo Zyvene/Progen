@@ -1,5 +1,5 @@
-from schema import BuildingTopology
-from model_builder import build_model
+from input_management import BuildingTopology
+from seismic_simulation import build_model
 from validation import validate_model
 
 topology = BuildingTopology(

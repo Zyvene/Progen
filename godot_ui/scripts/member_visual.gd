@@ -1,34 +1,71 @@
 class_name MemberVisual
 extends MeshInstance3D
 
-## A thin box mesh that re-orients and re-stretches itself between two live
-## world points every call to update_between(). Used to draw a beam/column
-## between its two node bodies each frame.
+static var _mesh_cache: Dictionary = {}
+static var _material_cache: Dictionary = {}
 
-var thickness: float = 0.15
+static func clear_caches() -> void:
+	_mesh_cache.clear()
+	_material_cache.clear()
 
-func setup(color: Color, thickness_value: float) -> void:
-	thickness = thickness_value
-	mesh = BoxMesh.new()
+static func _i_profile_mesh(section: Dictionary, length: float) -> Mesh:
+	var key := "%s|%.4f" % [section["name"], length]
+	if _mesh_cache.has(key):
+		return _mesh_cache[key]
+	var d: float = section["d_m"]
+	var bf: float = section["bf_m"]
+	var tf: float = section["tf_m"]
+	var tw: float = section["tw_m"]
+	var plates := [
+		[Vector3(bf, tf, length), Vector3(0.0, d / 2.0 - tf / 2.0, 0.0)],
+		[Vector3(bf, tf, length), Vector3(0.0, -d / 2.0 + tf / 2.0, 0.0)],
+		[Vector3(tw, d - 2.0 * tf, length), Vector3.ZERO],
+	]
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for plate in plates:
+		var box := BoxMesh.new()
+		box.size = plate[0]
+		st.append_from(box, 0, Transform3D(Basis.IDENTITY, plate[1]))
+	var mesh := st.commit()
+	_mesh_cache[key] = mesh
+	return mesh
+
+static func _material(color: Color) -> StandardMaterial3D:
+	var key := color.to_html()
+	if _material_cache.has(key):
+		return _material_cache[key]
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = color
-	material_override = mat
+	_material_cache[key] = mat
+	return mat
 
-func update_between(a: Vector3, b: Vector3) -> void:
-	var diff := b - a
-	var length := diff.length()
+var _base_length: float = 0.0
+var _depth_hint: Vector3 = Vector3.UP
+
+func setup(color: Color, a: Vector3, b: Vector3, section: Dictionary, depth_hint: Vector3) -> void:
+	var length := (b - a).length()
 	if length < 0.001:
 		return
-	global_position = (a + b) * 0.5
-	var dir := diff / length
-	var up := Vector3.UP
-	if abs(dir.dot(up)) > 0.999:
-		up = Vector3.FORWARD
-	look_at(global_position + dir, up)
-	if mesh is BoxMesh:
-		(mesh as BoxMesh).size = Vector3(thickness, thickness, length)
+	_base_length = length
+	_depth_hint = depth_hint
+	mesh = _i_profile_mesh(section, length)
+	material_override = _material(color)
+	place(a, b)
 
-func current_length() -> float:
-	if mesh is BoxMesh:
-		return (mesh as BoxMesh).size.z
-	return 0.0
+func place(a: Vector3, b: Vector3) -> void:
+	var diff := b - a
+	var length := diff.length()
+	if length < 0.001 or _base_length <= 0.0:
+		return
+	var axis := diff / length
+	var depth_axis := (_depth_hint - axis * _depth_hint.dot(axis))
+	if depth_axis.length() < 0.001:
+		depth_axis = Vector3.UP if abs(axis.dot(Vector3.UP)) < 0.999 else Vector3.RIGHT
+		depth_axis = (depth_axis - axis * depth_axis.dot(axis))
+	depth_axis = depth_axis.normalized()
+	var width_axis := depth_axis.cross(axis).normalized()
+	transform = Transform3D(Basis(width_axis, depth_axis, axis * (length / _base_length)), (a + b) * 0.5)
+
+func set_color(color: Color) -> void:
+	material_override = _material(color)

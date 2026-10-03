@@ -1,0 +1,1325 @@
+================================================================================
+ProGen - Developer Guide
+================================================================================
+This file exists so that source code (.py and .gd files) can stay free of comments and docstrings. Every explanation, citation, and piece of context that used to live inline in the code has been moved here, tagged with the exact file and line number it came from in the pre-strip version of that file. README.md is unrelated to this file and was not changed by this pass.
+
+This file has two parts:
+  PART 1 -- Installation and run guide
+  PART 2 -- Comment/docstring catalogue
+
+================================================================================
+PART 1 - INSTALLATION AND RUN GUIDE
+================================================================================
+
+Requirements
+------------
+- Windows, with Python 3.12.10 installed and available as `py -3.12`.
+- Godot 4.4.1 (for the front-end / UI / 3D viewport).
+
+1. Create and activate a virtual environment (PowerShell or VSCode)
+-----------------------------------------------------------
+> py -3.12 -m venv .venv-1
+> .venv-1\Scripts\Activate.ps1
+
+If PowerShell blocks the activation script, activate without changing execution policy by calling the venv's Python directly instead (see step 4).
+
+2. Install Python dependencies
+-------------------------------
+> pip install -r requirements.txt
+
+3. Run the developer smoke tests
+----------------------------------
+> python demo.py
+> python test_building.py
+> python inspect_model.py
+
+- `demo.py` builds a small spread of sample buildings from
+  regular_buildings.xlsx (or a single built-in fallback topology if that
+  file is missing), validates each one, and runs a linear static gravity
+  check as a cheap "is this model actually analysis-ready" smoke test.
+- `test_building.py` builds one large topology and prints a validation
+  report.
+- `inspect_model.py` builds one topology and prints real node coordinates,
+  element connectivity, material properties, applied loads, a validation
+  report, and the result of an actual gravity analysis -- useful for
+  confirming the OpenSeesPy model looks the way it should.
+
+4. Run one full NLTHA (nonlinear time-history analysis) from the CLI
+------------------------------------------------------------------------
+> python simulation.py --topology sample_topology.json --output results.json --history nltha_history.csv
+
+If activation in step 1 was blocked, call the venv's Python directly instead
+of `python`:
+    .\.venv-1\Scripts\python.exe -m pip install -r requirements.txt
+    .\.venv-1\Scripts\python.exe demo.py
+    .\.venv-1\Scripts\python.exe simulation.py --topology sample_topology.json --output results.json --history nltha_history.csv
+
+Useful `simulation.py` flags:
+    --topology  path to a JSON file following SCHEMA.md (defaults to a
+                small built-in topology if omitted)
+    --motion    a CSV file with `time,acceleration_g` rows (or one
+                acceleration-g value per row); applied identically to both
+                the X and Y excitation directions
+    --magnitude seismic magnitude, 1-10 (default 5.0); ignored if --motion
+                is given
+    --dt        analysis time step in seconds (default 0.01)
+    --duration  strong-shaking duration D5-95 in seconds (default 15.0);
+                the full record is about 1.7 x longer
+    --output    where to write the results JSON
+    --history   where to write the full per-step time-history CSV
+
+Output files (wherever --output / --history point):
+    results.json        fundamental period, NSCP drift limit, peak stress,
+                         peak displacement (X and Y), peak deformation,
+                         maximum story drift, maximum IDR, the full
+                         Performance Evaluation result (with triggered rules
+                         and demand ratios), the model state, and the overall
+                         PASS/FAIL verdict.
+    nltha_history.csv    one row per converged time step: time_s,
+                         stress_mpa, displacement_m, displacement_y_m,
+                         deformation_m, idr.
+
+5. Run the Godot front end
+-----------------------------
+- Open the `godot_ui/` folder as a project in the Godot 4.4.1 editor and run
+  the main scene.
+- `GENERATE STRUCTURE` builds and displays the frame from the sidebar inputs,
+  with every member drawn as a W12X26 I-profile at true size.
+- The rule dropdown shows visual mock-ups of each Table 1 action (W-shape
+  upsizing, X-bracing, mid-height struts); no analysis is run for previews.
+- `RUN SIMULATION` creates `runs/run_<date-time>/`, writes `input.json`
+  there, and launches `simulation.py --run-dir` (from `.venv-1`) as a
+  background subprocess that runs the closed loop automatically:
+  Iteration 0 -> feedback -> Iteration 1 ... (up to 10 feedback
+  iterations). Each finished iteration appears in the Iteration Records
+  panel with its results printed in the terminal; click an entry to view
+  that iteration again.
+- While an iteration is simulating, the main viewport shakes the structure
+  with the displacements OpenSeesPy is computing (magnified; factor shown
+  bottom-left). The shake ends when that iteration is saved.
+- After the run, the Simulation Preview box shows the selected iteration's
+  structure; click it to replay that iteration's recorded shake in both the
+  preview and the main viewport
+  (iteration_<n>/frames.json) in real time.
+- A member falls to the ground at the moment its strain first exceeds the
+  rupture strain (display only; the analysis keeps the member). Columns
+  keep their length, so during a collapse the building sways and sinks.
+  A collapsed iteration's playback ends on the last computed frame with
+  the collapse time shown.
+- `Clean Previous Runs` permanently deletes every `runs/run_*` folder after
+  a confirmation dialog; it is disabled while a simulation is running.
+- `RESET STRUCTURE` clears the viewport and terminal.
+
+
+================================================================================
+PART 2 -- COMMENT / DOCSTRING CATALOGUE
+================================================================================
+Format per entry:
+    [file : original line number(s)]
+    <verbatim original text>
+    Explanation: <what it meant, and how it relates to the thesis>
+
+Line numbers refer to the file as it existed immediately before comments
+were stripped out (i.e., the last version of each file that still had
+these comments in place).
+
+NOTE (W-shape update): input_management.py, procedural_content_generation.py,
+seismic_simulation.py, performance_evaluation.py, data_management.py,
+validation.py, simulation.py, and godot_ui/scripts/member_visual.gd,
+static_structure_view.gd and main.gd were substantially rewritten after this
+catalogue was made (W-shape sections, NSCP 2015 evaluation, sourced ground
+motion, run folders). Their entries below describe the earlier versions
+(350 mm placeholder section, 1.5 % drift limit, sine-wave motion). The
+current behavior and its sources are documented in README.md.
+
+
+--------------------------------------------------------------------------------
+input_management.py  (System Architecture layer: Input Management)
+--------------------------------------------------------------------------------
+
+[input_management.py : 1-27]
+"""
+input_management.py
+====================
+Input Management layer: receives, validates, and distributes user inputs
+to the downstream layers. Structural parameters are validated against the
+LSDSE-derived attribute ranges (see SCHEMA.md); invalid inputs raise before
+generation is triggered. Fixed material properties are also defined here
+and loaded as evaluation thresholds applied consistently across every run.
+
+Parametric scope:
+    floor_count   : 1  .. 10    stories
+    bay_count_x   : 1  .. 10    bays in the X direction
+    bay_count_y   : 1  .. 10    bays in the Y direction
+    bay_width_x   : building-specific, feet
+    bay_width_y   : building-specific, feet
+    story_height  : building-specific, feet
+
+NOTE on units: the sample dataset stores story height and bay widths as
+plain numbers (e.g. 16, 28-40) with no unit column. This matches the
+convention used elsewhere in this project (see structure_data.gd in the
+LSDSE-Godot-Prototype repo, which hardcodes "All coordinates are in
+feet"), so geometry is assumed to be in **feet** and converted to
+**meters** internally so the whole model (geometry + kN/m^2 loads +
+GPa material) lives in one consistent SI unit system (kN, m).
+If the true unit convention turns out to be different, only
+`FEET_TO_M` needs to change.
+"""
+Explanation: Module-level docstring for the whole file. Identifies this file
+as the thesis's "Input Management" layer -- the box in the System
+Architecture that receives and validates the structural + seismic inputs
+before anything downstream (PCG, Seismic Simulation) touches them. Documents
+the parametric scope (1-10 floors/bays, matching the thesis's stated range)
+and the feet-to-meters unit convention this whole codebase relies on,
+inherited from the LSDSE-Godot-Prototype's existing convention rather than
+invented here.
+
+[input_management.py : 36-40]
+"""
+Geometry fields are stored in the SOURCE units (feet) and exposed via
+the *_m properties in meters, so callers never have to remember to
+convert.
+"""
+Explanation: Docstring on the BuildingTopology dataclass explaining the
+unit-handling design: raw feet in, meters out via properties, so every
+downstream consumer works in one consistent SI system without re-deriving
+the conversion itself.
+
+[input_management.py : 43-48] (inline field comments)
+    floor_count: int          # number of stories above the base, >= 1
+    story_height: float       # ft, uniform story height (all stories equal)
+    bay_count_x: int          # number of bays in X, >= 1
+    bay_width_x: float        # ft, uniform bay width in X
+    bay_count_y: int          # number of bays in Y, >= 1
+    bay_width_y: float        # ft, uniform bay width in Y
+Explanation: Per-field unit and constraint annotations for the core
+geometry inputs the thesis specifies as the parametric scope (floor count,
+bay counts, bay widths, story height) -- these are the same fields
+SCHEMA.md documents as the Input Management -> PCG contract.
+
+[input_management.py : 50-54]
+    # Panel loads (kN/m^2). Not present in the sample dataset (PCG will
+    # eventually generate these); default to the midpoint of each
+    # spec'd range and can be overridden per-building.
+    floor_load_kpa: float = 6.0   # kN/m^2, spec range 2-10
+    roof_load_kpa: float = 3.0    # kN/m^2, spec range 1-5
+Explanation: Notes that floor/roof panel loads are placeholder defaults
+(midpoint of the spec'd range) because the sample dataset used as
+placeholder input has no load columns -- these values are meant to be
+superseded once PCG/NeuralSizer generates real per-building loads.
+
+[input_management.py : 84]
+    # ---- derived geometry, in meters -----------------------------------
+Explanation: Section header separating raw stored fields from the derived
+(converted-to-meters) geometry properties below it.
+
+[input_management.py : 107]
+    """Number of node levels including the base (level 0)."""
+Explanation: Clarifies that n_levels = floor_count + 1, i.e. level 0 is the
+ground/base level and is counted, matching the node-grid convention used
+throughout Procedural Content Generation and Seismic Simulation.
+
+[input_management.py : 131]
+    """Create a topology from the JSON contract used by Godot/PCG."""
+Explanation: Documents that `from_dict` is the deserialization side of the
+Godot <-> Python JSON contract (SCHEMA.md) -- this is the function
+`simulation.py` calls when Godot exports `sample_topology.json`.
+
+[input_management.py : 151]
+    """AK Steel Grade 25, per Table 2."""
+Explanation: Ties MaterialProps directly to the thesis's Table 2 (material
+properties table) -- this dataclass's defaults are meant to be exactly the
+values Table 2 specifies for AK Steel Grade 25, not arbitrary placeholders.
+
+[input_management.py : 154-159] (inline field comments)
+    E_gpa: float = 200.0                # modulus of elasticity, GPa
+    fy_mpa: float = 170.0                # tensile strength, yield (minimum), MPa
+    tensile_ultimate_mpa: float = 290.0  # tensile strength, ultimate (minimum), MPa
+    elongation_at_break_pct: float = 26.0  # elongation at break (minimum), %
+    density_gcc: float = 7.87            # density, g/cc
+    poisson: float = 0.30       # not given by Table 2; standard value for structural steel
+Explanation: Field-by-field mapping back to Table 2's material property
+rows, and an explicit flag that Poisson's ratio (0.30) is NOT one of
+Table 2's given values -- it's a standard assumed value for structural
+steel, added because OpenSeesPy's shear modulus derivation needs it and the
+paper doesn't supply one.
+
+[input_management.py : 163]
+    """Modulus in kPa, for a (kN, m) unit system."""
+Explanation: E_kpa converts Table 2's GPa modulus into the kN/m unit system
+this entire OpenSeesPy model is built in (see the feet-to-meters convention
+above).
+
+[input_management.py : 172]
+    """Shear modulus, derived from E and Poisson's ratio (isotropic)."""
+Explanation: G is not given by Table 2 either -- it's derived from E and
+the assumed Poisson's ratio using the standard isotropic-material relation,
+needed for the fiber-section torsional stiffness term in
+seismic_simulation.py.
+
+[input_management.py : 177]
+    """Strain at which a fiber is considered to have fractured."""
+Explanation: rupture_strain converts Table 2's elongation-at-break percentage
+into a strain fraction; it is the exact threshold used both by the MinMax
+rupture-strain wrapper in seismic_simulation.py and by Rule 3 (rupture
+deformation) in performance_evaluation.py.
+
+[input_management.py : 183-197]
+    """
+    Placeholder beam/column cross-section properties: a solid square bar,
+    uniform across every beam and column in every building, standing in for
+    the per-element section catalog PCG/NeuralSizer is expected to supply.
+
+    Sized (350mm square) so that a mid-range parametric configuration sits
+    just under material yield under gravity alone, leaving headroom for
+    seismic loading to actually matter -- the original 100cm^2 placeholder
+    put every configuration roughly 7x over yield from gravity alone,
+    saturating the peak-stress metric regardless of seismic magnitude. The
+    upper end of the parametric range (10 floors, 10x10 bays, 9m bays,
+    10 kN/m^2 loads) still legitimately overstresses this section, same as
+    it would any single uniform section -- that's expected given there's no
+    per-element sizing, not a bug.
+    """
+Explanation: This is the single most important calibration note in the
+codebase. It documents why SectionProps uses a 350mm solid square instead
+of the original 100cm^2 placeholder: the original section put every tested
+building roughly 7x over yield stress from gravity load alone, which
+saturated the "peak stress" metric and made seismic magnitude irrelevant to
+the outcome (this was the root cause diagnosed when "magnitude 10" wasn't
+producing a FAIL). The 350mm section was tuned via diagnostic parameter
+sweeps so a mid-range building sits just under yield under gravity alone,
+leaving room for seismic loading to actually move the needle. It also
+records, as expected (not a bug), that the most extreme end of the
+parametric range still overstresses this single uniform section -- because
+there is no per-element sizing yet (PCG/NeuralSizer's future job per the
+thesis), every member in every building shares this one placeholder
+section.
+
+[input_management.py : 200-203] (inline field comments)
+    A_m2: float = 0.1225           # cross-sectional area, m^2  (350mm square)
+    Iz_m4: float = 1.250520833e-3  # strong-axis moment of inertia, m^4
+    Iy_m4: float = 1.250520833e-3  # weak-axis moment of inertia, m^4
+    J_m4: float = 2.501041667e-3   # torsional constant, m^4 (~= Iz + Iy)
+Explanation: The actual computed section constants for the 350mm solid
+square described above -- area, both bending moments of inertia (equal
+because it's a square), and the torsional constant (approximately Iz + Iy
+for a solid square, per standard mechanics-of-materials formulas).
+
+
+--------------------------------------------------------------------------------
+procedural_content_generation.py  (System Architecture layer: Procedural
+Content Generation)
+--------------------------------------------------------------------------------
+
+[procedural_content_generation.py : 1-28]
+"""
+procedural_content_generation.py
+=================================
+Procedural Content Generation layer: constructs the beam-column structural
+topology from validated parametric inputs using deterministic rule-based
+assembly, where every grid intersection across all floor levels becomes a
+connection point for beams and columns.
+
+This is pure geometry -- no OpenSeesPy import, no node tags, no material or
+section concepts. It mirrors structure_generator.gd's Godot-side grid
+assembly almost exactly (same node-key convention, same column/beam
+connectivity rules), so both sides of the pipeline describe the identical
+topology the identical way. Turning this topology into an analysis-ready
+OpenSeesPy model is Seismic Simulation's job, not this layer's -- that
+separation matches the thesis's own architecture, where PCG hands a
+topology to Seismic Simulation each cycle.
+
+Node key: (level, row, col), where level 0 = base/ground and
+level = floor_count is the roof.
+
+Connectivity rules:
+- Columns: one per grid point per story, connecting
+  (level, row, col) -> (level+1, row, col).
+- Beams: a complete grid at every level from 1 (first floor) through
+  floor_count (roof) -- X-direction beams connecting (col, col+1) at each
+  row, and Y-direction beams connecting (row, row+1) at each col. Level 0
+  (the base) has no beams, only columns rising from it.
+"""
+Explanation: Establishes this file as the thesis's dedicated "Procedural
+Content Generation" layer -- pure rule-based topology assembly with zero
+OpenSeesPy dependency, deliberately separated from Seismic Simulation to
+match the paper's own architecture (PCG hands a topology to Seismic
+Simulation each cycle, they are not the same box). Also documents that this
+Python module mirrors the Godot-side `structure_generator.gd` almost
+exactly, so both halves of the pipeline (front-end display, back-end
+analysis) describe the same topology the same way -- this is why
+`structure_generator.gd` needs zero comments of its own: this docstring is
+the canonical description of the shared algorithm.
+
+[procedural_content_generation.py : 35]
+    NodeKey = Tuple[int, int, int]  # (level, row, col)
+Explanation: Documents the exact meaning of the three integers in a
+NodeKey tuple, matching the (level, row, col) convention described in the
+module docstring above.
+
+[procedural_content_generation.py : 40-42]
+    """Pure beam-column topology: which grid points exist, where they sit
+    in space, and how they connect. No OpenSeesPy concepts (node tags,
+    material, section, elements) attached yet."""
+Explanation: Reinforces that TopologyGrid is a pure-geometry data
+structure -- the PCG layer's output -- with no analysis concepts mixed in
+yet; those get attached later, in Seismic Simulation's build_model().
+
+[procedural_content_generation.py : 52-53]
+    """Compute the full node/column/beam grid for `topology`. Pure
+    computation -- no OpenSeesPy model is created or touched."""
+Explanation: Confirms generate_topology_grid() has no side effects on any
+OpenSeesPy model state -- it is safe to call repeatedly and independently
+of any analysis session.
+
+[procedural_content_generation.py : 72]
+    # -- Columns: every grid point, every story ----------------------------
+Explanation: Section header marking the start of the column-connectivity
+assembly loop, implementing the "one column per grid point per story" rule
+from the module docstring.
+
+[procedural_content_generation.py : 79]
+    # -- Beams: every level 1..floor_count, full grid in X and Y -----------
+Explanation: Section header marking the start of the beam-connectivity
+assembly loop (levels 1 through floor_count only -- the base level has no
+beams).
+
+[procedural_content_generation.py : 82]
+        # X-direction beams: connect (col, col+1) at each row
+Explanation: Identifies this inner loop as generating the X-direction beam
+grid -- these are the beams that later receive tributary panel load in
+seismic_simulation.py's apply_panel_loads (the one-way load path
+assumption).
+
+[procedural_content_generation.py : 86]
+        # Y-direction beams: connect (row, row+1) at each col
+Explanation: Identifies this inner loop as generating the Y-direction beam
+grid -- these beams exist structurally but receive no directly-applied
+panel load under the one-way load path assumption documented in
+seismic_simulation.py.
+
+
+--------------------------------------------------------------------------------
+seismic_simulation.py  (System Architecture layer: Seismic Simulation)
+--------------------------------------------------------------------------------
+
+[seismic_simulation.py : 1-29]
+"""
+seismic_simulation.py
+======================
+Seismic Simulation layer: translates a Procedural Content Generation
+topology into an analysis-ready OpenSeesPy model (nodes, base fixity,
+material, fiber sections, beam-column elements, gravity loads), then
+executes Nonlinear Time-History Analysis (NLTHA) against a bidirectional
+base excitation.
+
+Units are kN, m, seconds throughout. Ground acceleration input is in g
+unless a caller passes acceleration in m/s^2 directly to `run_nltha`.
+
+Model conventions
+------------------
+- ndm=3, ndf=6 (full 3D frame, 6 DOF/node)
+- Axes: X, Y = plan directions (matches bay_count_x / bay_count_y),
+        Z = vertical (story direction)
+- Node tag scheme: unique per (level, row, col):
+      tag = level * (n_nodes_x * n_nodes_y) + row * n_nodes_x + col + 1
+- Base nodes (level 0) are fully fixed (fix 1 1 1 1 1 1) -- a simple
+  fixed-base idealization; swap for a spring/foundation model later if
+  the project needs one.
+
+Load path assumption (panel loads -> beam loads): the floor/roof deck is
+assumed to span in the Y direction onto the X-direction beams (a one-way
+slab), which is the standard simplifying assumption used before a real
+slab/deck model exists. Only X-direction beams receive tributary panel
+load; Y-direction beams carry no directly-applied panel load in this pass.
+"""
+Explanation: Module docstring identifying this file as the thesis's
+"Seismic Simulation" layer -- the box that takes PCG's pure topology and
+turns it into a real OpenSeesPy model, then runs the NLTHA. Documents the
+unit system (kN, m, s), the 3D model conventions (6 DOF/node, axis
+meanings, node tag formula, fixed-base idealization), and explicitly
+flags the one-way load-path simplification (only X-direction beams get
+panel load) as a documented modeling choice rather than an oversight.
+
+[seismic_simulation.py : 35]
+    NodeKey = Tuple... (imported)
+[seismic_simulation.py : 43-45]
+    # IDR_LIMIT is re-exported here for convenience; its authoritative
+    # definition and the rest of the evaluation thresholds live in
+    # performance_evaluation.py, which owns the Performance Evaluation layer.
+Explanation: Clarifies the ownership boundary between Seismic Simulation
+and Performance Evaluation: the IDR limit constant is defined once, in
+performance_evaluation.py, and merely re-exported here so seismic_simulation
+doesn't need a second import elsewhere. Prevents two files from disagreeing
+about what "the" IDR limit is.
+
+[seismic_simulation.py : 58-80] *** KEY CITATION -- PRESERVE EXACTLY ***
+    # --- Magnitude -> PGA ---------------------------------------------------
+    # The paper defines the seismic magnitude input as a 1-10 logarithmic scale
+    # (Michigan Tech, 2021) but does not specify a magnitude-to-acceleration
+    # conversion. This uses the Esteva & Villaverde (1973) attenuation
+    # relationship, evaluated at a fixed nominal epicentral distance since this
+    # tool has no distance input at all -- consistent with the thesis's own
+    # disclaimed limitation that "the structural evaluations do not account for
+    # the structure's proximity to the epicenter or hypocenter" (Scope and
+    # Limitation of the Study).
+    #
+    # PGA [cm/s^2] = b1 * exp(b2*M) / (R + b4)^b3, with b1=5600, b2=0.8, b3=2,
+    # b4=40 (fit on firm/rock-site strong-motion records).
+    #
+    # Esteva, L., & Villaverde, R. (1973). Seismic risk, design spectra and
+    # structural reliability. In Proceedings of the Fifth World Conference on
+    # Earthquake Engineering (Vol. 2, pp. 2586-2596). Rome, Italy: Italian
+    # Association for Earthquake Engineering.
+    # No DOI: this conference proceedings predates the DOI system (introduced
+    # in 2000) and none has been retroactively assigned -- verified by search;
+    # not omitted for convenience. Coefficients cross-checked against the JCSS
+    # Probabilistic Model Code, Section 2.17 "Earthquake Loads" (Joint
+    # Committee on Structural Safety), which reproduces the same relationship:
+    # https://www.jcss-lc.org/publications/jcsspmc/earthquake1b.pdf
+Explanation: This is the thesis-fidelity citation for the single most
+scrutinized piece of engineering judgment in the whole tool: how a 1-10
+seismic magnitude input (which the thesis defines but never converts to a
+physical ground-motion amplitude) becomes an actual peak ground
+acceleration. The paper leaves this conversion completely unspecified,
+so this uses the Esteva & Villaverde (1973) magnitude-attenuation
+relationship, a real, citable formula from a peer-reviewed earthquake
+engineering proceedings, evaluated at one fixed nominal distance because
+this tool (matching the thesis's own stated limitation) has no
+epicenter-distance input at all. The formula and its coefficients
+(b1=5600, b2=0.8, b3=2, b4=40) were independently verified via multiple
+web searches and cross-checked against the JCSS Probabilistic Model Code
+(a structural-safety reference document) before being adopted, and the
+comment explicitly documents that no DOI exists for this 1973 proceedings
+(it predates the DOI system entirely) rather than silently omitting a
+citation.
+
+[seismic_simulation.py : 83-84]
+    # This tool has no epicentral-distance input of any kind, so R is fixed at
+    # a documented nominal value rather than a free parameter.
+Explanation: Reiterates why NOMINAL_EPICENTRAL_DISTANCE_KM is a hardcoded
+constant (40 km) rather than a user input -- the thesis's own scope
+explicitly disclaims accounting for epicenter/hypocenter proximity.
+
+[seismic_simulation.py : 90-92]
+    """Convert a seismic magnitude (1-10) into a synthetic PGA in g via the
+    Esteva & Villaverde (1973) attenuation relationship (see the module-level
+    citation above) evaluated at a fixed nominal epicentral distance."""
+Explanation: Function-level pointer back to the citation block above --
+this is the actual function Godot's UI and simulation.py's --magnitude flag
+both ultimately call.
+
+[seismic_simulation.py : 104-108]
+    """Return a tapered, deterministic motion for a solver smoke test.
+
+    freq_hz/freq2_hz/phase_rad let a second (Y-direction) component differ
+    from the primary (X-direction) one so a bidirectional shake isn't two
+    perfectly correlated copies of the same waveform.
+    """
+Explanation: Documents why synthetic_motion takes extra frequency/phase
+parameters: this is what makes bidirectional (X and Y) seismic excitation
+genuinely two different waveforms rather than the same motion duplicated on
+both axes, directly implementing the user's requirement to excite the
+structure in both plan directions instead of X-only.
+
+[seismic_simulation.py : 126]
+    """Read ``time,acceleration_g`` or a one-column acceleration CSV."""
+Explanation: Documents the two accepted CSV formats for a user-supplied
+ground motion record, used by the --motion CLI flag.
+
+[seismic_simulation.py : 146]
+    # --- OpenSeesPy model assembly -------------------------------------------
+Explanation: Section header separating the magnitude/motion utility
+functions above from the actual OpenSeesPy model-building code below.
+
+[seismic_simulation.py : 150]
+    """Everything downstream consumers (validation, analysis, viz) need."""
+Explanation: Documents that BuiltModel is the single shared data structure
+passed to validation.py, performance_evaluation.py, and any future
+visualization/inspection code -- one definition, multiple consumers.
+
+[seismic_simulation.py : 155-156, 158, 162] (inline field comments)
+    column_elements: ... # (ele_tag, i_tag, j_tag)
+    beam_elements: ...   # (ele_tag, i_tag, j_tag)
+    floor_beam_tags: ... # level -> beam element tags at that level
+    section_tags: ... = (0, 0)  # column, beam fiber sections
+Explanation: Tuple-shape and dict-key/value documentation for BuiltModel's
+fields, so callers don't have to guess the meaning of each tuple position.
+
+[seismic_simulation.py : 178-181]
+    """
+    Apply floor loads (all levels 1..floor_count-1) and roof load (level
+    floor_count) as uniform distributed loads on X-direction beams only,
+    per the one-way load-path assumption (module docstring).
+    """
+Explanation: Documents apply_panel_loads's exact behavior and points back
+to the module docstring's one-way load-path assumption, which SCHEMA.md
+also references directly by name.
+
+[seismic_simulation.py : 191]
+    # We recover which stored beam elements are X-direction by comparing
+    # the row/col of their endpoints (same row, adjacent col => X-beam).
+Explanation: Explains the geometric test used to classify a beam element as
+X-direction vs Y-direction after the fact (same row, adjacent column means
+X-direction), since BuiltModel doesn't separately tag beams by direction.
+
+[seismic_simulation.py : 197]
+            continue  # Y-direction beam: no panel load in this pass
+Explanation: Marks exactly where the one-way load-path assumption is
+enforced in code -- Y-direction beams are skipped entirely when applying
+panel loads.
+
+[seismic_simulation.py : 203]
+        w = panel_load_kpa * trib_width_m  # kN/m, magnitude
+Explanation: Documents the units of the computed distributed load value
+(kN/m) before it's passed (negated, for downward gravity) to OpenSeesPy's
+eleLoad call.
+
+[seismic_simulation.py : 218-226]
+    """
+    Build a fresh OpenSeesPy model in memory for `topology` and return a
+    BuiltModel describing what was created. Calling this again for a
+    different topology starts a brand-new model (wipe()).
+
+    The topology itself (which nodes exist, how they connect) comes from
+    procedural_content_generation.generate_topology_grid -- this function's
+    job is purely to translate that grid into OpenSeesPy calls (nodes,
+    fixity, material, section, elements).
+    """
+Explanation: Documents build_model's contract and the layer boundary with
+PCG once more: PCG decides the topology, this function's only job is
+translating that already-decided topology into OpenSeesPy API calls (which
+is exactly the "PCG hands a topology to Seismic Simulation" relationship
+described in the thesis's architecture).
+
+[seismic_simulation.py : 249-253]
+    # -- Material / transform ----------------------------------------------
+    # Geometric transformation for 3D elasticBeamColumn: columns are
+    # vertical (local axis along global Z) so a global-X vector reference
+    # works for them; beams run horizontal so a global-Z vector reference
+    # works. Two transforms keep both element groups well-conditioned.
+Explanation: Explains why two separate OpenSeesPy geomTransf objects exist
+(one for columns, one for beams) -- each needs a different reference vector
+so the local coordinate system for bending doesn't become degenerate given
+each element type's orientation.
+
+[seismic_simulation.py : 260-262]
+        # This placeholder fiber rectangle can be replaced by PCG section
+        # geometry when the generation module starts assigning sections.
+Explanation: Flags the fiber-section rectangle geometry as another instance
+of the same placeholder-until-PCG-exists pattern already documented on
+SectionProps in input_management.py.
+
+[seismic_simulation.py : 270-273]
+        # Wrap with a strain-based rupture cutoff (Table 2's elongation at
+        # break) so a fiber driven past the material's actual failure strain
+        # loses capacity instead of silently reporting an ever-larger,
+        # physically meaningless post-yield force forever.
+Explanation: Explains why Steel01 is wrapped in a MinMax material keyed to
+Table 2's elongation-at-break strain -- without this, OpenSeesPy's
+Steel01 model would keep reporting force indefinitely past the material's
+real physical rupture point, which would make Rule 3 (rupture deformation)
+impossible to detect correctly.
+
+[seismic_simulation.py : 278-279]
+        # Solve for a solid rectangle that exactly matches the declared
+        # (A_m2, Iz_m4): A = w*d and Iz = w*d^3/12 => d = sqrt(12*Iz/A).
+Explanation: Documents the closed-form algebra used to size the fiber
+patch rectangle so it actually has the declared cross-sectional area and
+strong-axis moment of inertia -- this is the fix for the earlier
+fiber-geometry bug where depth and width were solved independently and
+produced a real Iz only ~32% of the declared value.
+
+[seismic_simulation.py : 282-284]
+        # A single rectangle can't independently match a separately-declared
+        # Iy too -- record the Iy this geometry actually has, so downstream
+        # stress calculations stay consistent with what was really built.
+Explanation: Explains why the code writes the *actual* resulting Iy back
+onto the section object (via dataclasses.replace) instead of trusting the
+originally-declared Iy_m4 -- a single rectangle's width and depth are fully
+determined by matching A and Iz, so Iy comes out however it comes out, and
+downstream bending-stress math must use the real value, not the aspirational
+one.
+
+[seismic_simulation.py : 360]
+    # --- NLTHA execution -------------------------------------------------------
+Explanation: Section header marking the start of the nonlinear
+time-history analysis (NLTHA) execution code, as distinct from the model
+assembly code above it.
+
+[seismic_simulation.py : 375]
+    # Lump each floor's gravity load equally into its dynamic nodes.
+Explanation: Documents the (simplified) mass-lumping approach: each floor's
+total gravity load, divided by g, is spread equally across every node at
+that level, rather than using a more detailed tributary-mass distribution.
+
+[seismic_simulation.py : 392-401]
+    """Advance the per-floor IDR (both directions) and torsional-ratio
+    trackers by one converged step; return this step's
+    (roof disp X, roof disp Y, max drift either direction, max IDR either
+    direction).
+
+    Torsional ratio follows ASCE/SEI 7-22's definition: the largest story
+    drift among a floor's perimeter nodes divided by the average story
+    drift across those same nodes (see performance_evaluation.py), using
+    the resultant of both excitation directions per node so the check
+    isn't skewed by whichever axis happens to dominate the response.
+    """
+Explanation: Documents _story_and_roof_response's exact return values and,
+critically, explains the torsional-ratio fix: using the resultant of both
+X and Y drift per node (rather than a single axis) so the ASCE-style
+torsional irregularity check (Rule 9) isn't distorted when one excitation
+direction happens to dominate the structural response (this was the fix
+for the diagnosed bug where an X-only torsion check produced an inflated,
+misleading ratio on a symmetric test building).
+
+[seismic_simulation.py : 453-455]
+    """Advance the per-element peak-stress / peak-deformation / peak-pure-
+    compressive-stress trackers by one converged step; return this step's
+    (peak stress MPa, peak deformation m) across all elements."""
+Explanation: Documents the per-element metric trackers this function
+updates every converged analysis step, feeding Rules 1, 2, and 3 (element
+scope) in Performance Evaluation.
+
+[seismic_simulation.py : 459-460]
+        # Matches the rectangle build_model actually constructs: a solid
+        # rectangle with A_m2 = w*d and Iz_m4 = w*d^3/12 has d = sqrt(12*Iz/A).
+Explanation: Re-derives the same closed-form rectangle-depth formula used
+in build_model, here to compute the extreme-fiber distance needed for
+combined axial-plus-bending stress -- kept consistent with the actual
+built geometry, not the originally-declared section dimensions.
+
+[seismic_simulation.py : 467-470]
+            # Empirically verified: under a pure-compression gravity-only
+            # load case, force[0] (axial at node i, the lower/first-added
+            # node) is positive -- so positive force[0] means compression
+            # for this element's local-x (i -> j) orientation.
+Explanation: Documents the axial-force sign convention this codebase
+relies on for the Rule 2 (buckling) check, verified empirically by building
+a small test structure, running gravity-only, and confirming which sign
+corresponds to compression -- rather than assuming OpenSeesPy's sign
+convention without checking.
+
+[seismic_simulation.py : 480-482]
+        # Chord deformation as the resultant of both excitation directions
+        # (X and Y) -- with bidirectional shaking, a member's deformation
+        # can be dominated by either axis depending on its orientation.
+Explanation: Explains why member deformation (feeding Rule 3, rupture) is
+computed as the resultant magnitude of both X and Y relative displacement,
+not just one axis -- necessary once shaking became bidirectional, since a
+member oriented along Y could otherwise have its dominant deformation
+direction ignored.
+
+[seismic_simulation.py : 503-505]
+    """Build, gravity-load, shake (bidirectionally), extract the requested
+    metrics, and hand them to Performance Evaluation. Returns the standard
+    run record (see data_management.build_run_record) plus "history"."""
+Explanation: Top-level docstring for run_nltha, the function simulation.py
+actually calls -- summarizes the full pipeline this one function drives:
+build -> gravity -> bidirectional NLTHA -> Performance Evaluation -> record.
+
+[seismic_simulation.py : 519-522]
+        # The placeholder section is a single uniform size across every
+        # member; at the upper end of the parametric range it can genuinely
+        # be too small to carry gravity load alone. Report that plainly
+        # instead of crashing the whole pipeline.
+Explanation: Explains why a gravity-analysis failure is caught and turned
+into a structured "collapsed under gravity" result instead of letting an
+unhandled RuntimeError kill the whole simulation.py process before
+results.json could ever be written.
+
+[seismic_simulation.py : 543-546]
+        # ARPACK can fail to converge and still return a value (junk memory,
+        # e.g. ~1e-311) without raising -- reject anything that isn't a sane,
+        # finite, positive eigenvalue rather than feed it to ops.rayleigh.
+Explanation: Documents a real bug that was found and fixed: OpenSeesPy's
+eigenvalue solver (ARPACK under the hood) can silently fail to converge and
+return garbage memory instead of raising an exception. This comment marks
+the defensive check added (finite, in a sane range) before that value is
+used to compute Rayleigh damping, preventing a downstream OpenSeesError
+crash with no useful diagnostic.
+
+[seismic_simulation.py : 579-582]
+            # A fiber has very likely ruptured (see the MinMax rupture-strain
+            # wrapper above) or the structure has otherwise become
+            # unstable. Stop and report what was captured up to this point
+            # rather than crashing the whole pipeline.
+Explanation: Explains the graceful-degradation behavior when the seismic
+phase of the analysis fails to converge mid-run (as opposed to gravity
+failing beforehand) -- the most likely cause is a fiber hitting the
+Table-2-derived rupture strain, and the code reports everything captured up
+to that point (partial history, collapse time) instead of crashing.
+
+
+--------------------------------------------------------------------------------
+performance_evaluation.py  (System Architecture layer: Performance
+Evaluation; implements Table 1's 10 rule trigger conditions)
+--------------------------------------------------------------------------------
+
+[performance_evaluation.py : 1-26]
+"""
+performance_evaluation.py
+==========================
+Performance Evaluation layer: evaluates extracted peak metrics across
+three structural scopes, covering the trigger condition of all ten rules
+in the thesis's Table 1 (grouped by scope exactly as the paper groups
+them: Local=element, Relative=floor, Global=structure).
+
+    Element-level (Local)     Rule 1  peak stress > yield
+                              Rule 2  peak compressive stress > Euler
+                                      critical stress (buckling)
+                              Rule 3  peak deformation > rupture
+                                      displacement (elongation at break)
+    Floor-level (Relative)    Rule 4  floor IDR > 1.5%
+                              Rule 5  soft-story (floor N >= 1.5x floor N+1)
+                              Rule 6  mid-story IDR concentration
+                              Rule 7  X-vs-Y directional instability
+    Structure-level (Global)  Rule 8  roof displacement > 1.5% x height
+                              Rule 9  torsional irregularity (ASCE 7-22)
+                              Rule 10 mean stress approaches yield
+
+This module only *evaluates and reports* -- it does not modify the
+topology or re-simulate; that's the Feedback Engine, not built yet. Every
+offending element/floor is identified by tag and grid location so a
+future rule engine can act on this directly.
+"""
+Explanation: This module docstring is the direct Python-side mirror of the
+thesis's Table 1: it lists all ten rules exactly as the paper groups them
+into three scopes (element/local, floor/relative, structure/global) and
+states plainly that this layer only evaluates and reports -- it explicitly
+does NOT modify the topology or trigger a new generation cycle, because
+that closed-loop behavior belongs to the Feedback Engine layer, which per
+the user's explicit direction has not been built yet.
+
+[performance_evaluation.py : 32-34]
+    # Structural plausibility threshold from the thesis's Scope & Limitation
+    # section (Chang & Cheng, 2020). Governs Rule 4 (floor IDR) and Rule 8
+    # (roof displacement).
+    IDR_LIMIT = 0.015
+Explanation: Attributes the 1.5% inter-story-drift-ratio threshold directly
+to a citation already present in the thesis itself (Chang & Cheng, 2020,
+referenced in the paper's Scope & Limitation section) -- this is not an
+independently invented threshold, it is the paper's own number.
+
+[performance_evaluation.py : 37-48] *** KEY CITATION -- PRESERVE EXACTLY ***
+    # Torsional irregularity threshold, per ASCE/SEI 7-22 Table 12.3-1: a floor
+    # is torsionally irregular when the maximum story drift at one end (here,
+    # among perimeter nodes) exceeds 1.2x the average story drift across those
+    # same nodes. Table 1 Rule 9 describes the trigger qualitatively
+    # ("differential lateral displacement ... indicates torsional rotation")
+    # without a number, so this is a real code threshold filling that gap
+    # rather than an arbitrary one.
+    #
+    # American Society of Civil Engineers. (2022). Minimum design loads and
+    # associated criteria for buildings and other structures (ASCE/SEI 7-22).
+    # https://doi.org/10.1061/9780784415788
+    TORSIONAL_IRREGULARITY_RATIO_LIMIT = 1.2
+Explanation: Rule 9 in the thesis's Table 1 describes torsional
+irregularity only qualitatively (a differential lateral displacement
+"indicates torsional rotation"), with no numeric threshold given. This
+comment documents that the 1.2 ratio used here is not invented -- it is
+lifted directly from ASCE/SEI 7-22 (a real, current structural design
+code) Table 12.3-1's own definition of torsional irregularity, chosen
+specifically because it is the standard real-world criterion this kind of
+rule is based on, and is properly cited with a DOI (unlike the 1973
+Esteva & Villaverde reference, ASCE/SEI 7-22 is recent enough to have one).
+
+[performance_evaluation.py : 50-53]
+    # Effective-length factor for the Rule 2 Euler buckling check. K=1.0
+    # (pinned-pinned, unsupported length = one story height) is the standard
+    # simplifying assumption absent a full frame sidesway-stability analysis,
+    # which this tool doesn't perform.
+    COLUMN_K_FACTOR = 1.0
+Explanation: Justifies the K=1.0 (pinned-pinned) effective-length factor
+used in the Rule 2 Euler buckling formula as the standard simplifying
+assumption in the absence of a full sidesway-stability analysis, which is
+out of scope for this tool.
+
+[performance_evaluation.py : 56-57]
+    # Rule 10 ("mean peak stress approaches yield") is treated as a proximity
+    # check, not a strict exceedance -- 90% of yield is the trigger.
+    MEAN_STRESS_APPROACH_FRACTION = 0.90
+Explanation: Documents the specific numeric interpretation chosen for Rule
+10's qualitative language ("approaches yield") -- 90% of yield stress was
+picked as a concrete, checkable proximity threshold.
+
+[performance_evaluation.py : 66-71]
+    """Element / floor / structure-scope pass-fail for one completed (or
+    partially completed) NLTHA run. `built` is a
+    seismic_simulation.BuiltModel; the peak_* trackers are the per-element
+    and per-floor accumulators seismic_simulation.run_nltha updates every
+    converged step.
+    """
+Explanation: Documents evaluate_performance's inputs -- the BuiltModel and
+the various peak-value accumulator dicts populated incrementally, step by
+step, by seismic_simulation.run_nltha during the transient analysis.
+
+[performance_evaluation.py : 85-86]
+    # -- Rule 2 basis: Euler critical stress, K=1.0, L=one story height,
+    # weak-axis radius of gyration (buckling governed by the weaker axis).
+Explanation: Documents the exact structural-mechanics basis for the Rule 2
+buckling check: classic Euler critical stress formula, using the
+weak-axis radius of gyration since a column buckles about its weaker axis
+first.
+
+[performance_evaluation.py : 93]
+    # -- Element-level (Rules 1, 2, 3) ---------------------------------
+Explanation: Section header marking the block of code implementing Table
+1's three element/local-scope rules.
+
+[performance_evaluation.py : 123]
+    # -- Floor-level (Rules 4, 5, 6, 7) ---------------------------------
+Explanation: Section header marking the block of code implementing Table
+1's four floor/relative-scope rules.
+
+[performance_evaluation.py : 152]
+    # -- Structure-level (Rules 8, 9, 10) --------------------------------
+Explanation: Section header marking the block of code implementing Table
+1's three structure/global-scope rules.
+
+
+--------------------------------------------------------------------------------
+data_management.py  (System Architecture layer: Data Management)
+--------------------------------------------------------------------------------
+
+[data_management.py : 1-17]
+"""
+data_management.py
+===================
+Data Management layer: defines the shape of a single NLTHA run record --
+the data this pipeline produces and (eventually) the Feedback Engine will
+consume across iterations.
+
+Per the thesis, Data Management "maintains all session data required to
+support the pipeline... stores fixed material constants, beam-column
+topology states per iteration, rule definitions and trigger conditions,
+per-iteration records of triggered rules and metric values, and the
+complete simulation history across all cycles." Only the single-run record
+shape is implemented so far -- there's no iteration loop yet (that's the
+Feedback Engine), so there's nothing to track *across* runs yet. Centralizing
+this shape here means Seismic Simulation and Output Layer share one
+definition instead of duplicating dict literals.
+"""
+Explanation: This docstring directly quotes the thesis's own description of
+the Data Management layer's responsibilities (session data, material
+constants, per-iteration topology states, rule trigger records, full
+simulation history across cycles). It then honestly scopes what is
+actually implemented so far: only a single-run record shape, because the
+multi-iteration tracking described in the quoted passage requires the
+Feedback Engine's iteration loop, which has not been built yet by explicit
+user direction. This is an example of the "paper-vs-code fidelity"
+discipline this whole project follows -- quoting the paper's own words and
+then stating plainly how much of it is actually implemented.
+
+[data_management.py : 41-46]
+    """Build the standardized run-record dict, whether the run completed,
+    collapsed under gravity, or lost convergence partway through the
+    seismic phase. Callers append "history" (the per-step time series)
+    separately -- it's a different kind of data (raw series vs. summary)
+    and not every consumer needs it.
+    """
+Explanation: Documents that build_run_record produces a single consistent
+dict shape regardless of which of the three possible outcomes occurred
+(full completion, gravity collapse, seismic non-convergence), and that the
+full per-step history is deliberately kept separate from this summary
+record since not every consumer (e.g., the Godot terminal) needs the raw
+time series.
+
+
+--------------------------------------------------------------------------------
+output_layer.py  (System Architecture layer: Output Layer)
+--------------------------------------------------------------------------------
+
+[output_layer.py : 1-10]
+"""
+output_layer.py
+================
+Output Layer: presents pipeline results. Per the thesis, "The Output Layer
+presents pipeline results through three components" -- Performance Metrics
+Display, NLTHA Inspector Panel, and 3D Structural Viewer. This module
+covers the first two (JSON for the metrics, CSV for the full per-step time
+history that backs an inspector view); the 3D Structural Viewer is Godot's
+static_structure_view.gd, on the other side of the process boundary.
+"""
+Explanation: Quotes the thesis's own three-component description of the
+Output Layer (Performance Metrics Display, NLTHA Inspector Panel, 3D
+Structural Viewer), and states exactly which two of the three this Python
+file implements (JSON + CSV writing) versus which one lives entirely on
+the Godot side of the process boundary (the 3D viewer, implemented in
+static_structure_view.gd) -- another explicit paper-vs-code fidelity note.
+
+[output_layer.py : 23]
+    """Return the pretty-printed JSON text for a run record."""
+Explanation: Documents serialize_result's single responsibility --
+formatting, not writing to disk (that's write_result_json's job).
+
+
+--------------------------------------------------------------------------------
+simulation.py  (orchestrator / CLI entry point)
+--------------------------------------------------------------------------------
+
+[simulation.py : 1-13]
+"""
+simulation.py
+==============
+Pipeline orchestrator and CLI entry point -- the "spine" that ties the
+System Architecture layers together for one run: reads a topology
+(Input Management), runs Seismic Simulation + Performance Evaluation via
+seismic_simulation.run_nltha, and writes results through the Output Layer.
+
+This is the script Godot's RUN SIMULATION button launches as a subprocess
+(see godot_ui/scripts/main.gd's _start_python_nltha), so its filename and
+CLI contract are load-bearing -- don't rename it without updating that
+call site too.
+"""
+Explanation: Explains that simulation.py is not itself one of the seven
+System Architecture layers, but the orchestrating "spine" that calls into
+Input Management, Seismic Simulation, Performance Evaluation, and Output
+Layer in sequence for a single run. Critically documents that its filename
+and CLI argument contract are load-bearing: godot_ui/scripts/main.gd's
+_start_python_nltha function launches it by this exact filename with this
+exact argument list, so renaming it or changing its flags without updating
+main.gd would silently break the RUN SIMULATION button.
+
+[simulation.py : 48-49]
+        # No paired orthogonal-component record is available for a custom
+        # motion file, so the same record is applied in both directions.
+Explanation: Explains why a user-supplied --motion CSV is applied
+identically to both X and Y excitation directions -- a real bidirectional
+ground motion record would need two paired orthogonal components, which
+this tool has no mechanism to accept, so a single-component custom file is
+duplicated onto both axes rather than left undefined on Y.
+
+[simulation.py : 54-56]
+        # A different frequency mix and a 90-degree phase offset keep the Y
+        # component from being a perfectly correlated copy of X, while still
+        # reflecting the same overall seismic intensity.
+Explanation: Explains why the synthetic (non-CSV) Y-direction motion uses
+different frequency parameters and a 90-degree phase shift relative to X --
+this is what makes the synthetic bidirectional shake genuinely
+two-dimensional rather than the same waveform mirrored onto both axes,
+while still deriving from the same magnitude-based PGA so overall seismic
+intensity stays consistent between the two directions.
+
+
+--------------------------------------------------------------------------------
+validation.py  (PCG / Input Management bridge -- model well-formedness
+checks)
+--------------------------------------------------------------------------------
+
+[validation.py : 1-15]
+"""
+validation.py
+==============
+Checks on a BuiltModel before it gets handed to OpenSeesPy for analysis. The checks are:
+    1. No orphaned nodes (every node touches at least one element, or is
+       a fixed base node).
+    2. Connectivity is complete:
+         - every non-base node is reachable from a base node by walking
+           the element graph (the frame is one connected structure, not
+           several disjoint pieces).
+         - every grid point at every level has a column below/above (as
+           appropriate) and a full beam grid at every floor level, i.e.
+           node count and element count match what the topology implies.
+    3. Every base node is actually fixed (no floating "ground" nodes).
+"""
+Explanation: Documents the three categories of structural well-formedness
+this module checks before any analysis is trusted: no orphaned nodes, full
+connectivity from every node back to a fixed base, and correct base
+fixity. This is what the "topology_valid" field in results.json actually
+reports on -- graph well-formedness, not seismic performance (a distinction
+that was a real source of user confusion earlier in the project, since a
+topologically valid structure can still fail seismically).
+
+[validation.py : 51]
+    # -- element counts vs. what the grid implies --------------------------
+Explanation: Section header marking the block that checks the actual
+number of column/beam elements against the count implied by the topology's
+grid dimensions.
+
+[validation.py : 60-61] (inline)
+        topology.n_nodes_y * (topology.n_nodes_x - 1)  # X-direction
+        + topology.n_nodes_x * (topology.n_nodes_y - 1)  # Y-direction
+Explanation: Labels each term of the expected-beams-per-level formula by
+which beam direction it accounts for.
+
+[validation.py : 70]
+    # -- base fixity ---------------------------------------------------------
+Explanation: Section header marking the block that checks the number of
+fixed base nodes matches the expected footprint.
+
+[validation.py : 78]
+    # -- orphaned nodes + connectivity (graph walk) ---------------------------
+Explanation: Section header marking the block that builds an adjacency map
+and checks for orphaned nodes.
+
+[validation.py : 91]
+    # BFS from base nodes to confirm the whole frame is one connected piece
+Explanation: Identifies the algorithm used to verify full structural
+connectivity: a breadth-first search starting from all base nodes, checking
+that every node in the model is reachable.
+
+[validation.py : 111]
+    # -- loads sanity check (warning only) ------------------------------------
+Explanation: Section header marking the (non-fatal, warning-only) check
+that every floor level actually received some panel load on its
+X-direction beams.
+
+
+--------------------------------------------------------------------------------
+sample_data.py  (dev utility -- placeholder topology input)
+--------------------------------------------------------------------------------
+
+[sample_data.py : 1-19]
+"""
+sample_data.py
+===============
+Converts rows of regular_buildings.xlsx into BuildingTopology objects,
+to use as realistic placeholder input while PCG doesn't exist yet.
+
+The dataset columns already match the schema field names 1:1:
+    Building_ID, Floor_Count, Story_Height,
+    Bay_Count_X, Bay_Width_X, Bay_Count_Y, Bay_Width_Y
+
+The dataset's actual parametric coverage (423 rows) is narrower than the
+full spec'd range:
+    floor_count   observed 1-10   (spec: 1-10)   -> full coverage
+    bay_count_x   observed 1-5    (spec: 1-10)   -> partial coverage
+    bay_count_y   observed 1-4    (spec: 1-10)   -> partial coverage
+So "near 10x10 bays" isn't available in this sample; the largest
+available footprint (5x4 bays) is used instead as the upper-end pick,
+and this gap is called out explicitly rather than silently upscaled.
+"""
+Explanation: Documents that this file's job is purely to provide realistic
+placeholder input data (real building dimensions from a spreadsheet) while
+a real Procedural Content Generation module didn't yet exist -- and honestly
+reports that the sample dataset's actual coverage (up to 5x4 bays) falls
+short of the full 1-10x1-10 bay range the thesis specifies, rather than
+quietly pretending the sample data covers the whole range.
+
+[sample_data.py : 32]
+    """Return a small deterministic building for simulation development."""
+Explanation: Documents sample_topology() as a fixed, non-random building
+used for quick development iteration and as simulation.py's fallback
+default when no --topology file is given.
+
+[sample_data.py : 72-78]
+    """
+    Pick a small spread of buildings across the parametric range, to use
+    as smoke-test / edge-case input:
+        - smallest:  1 floor,  smallest available bay counts (1x1)
+        - largest:   10 floors, largest available bay counts (5x4)
+        - one mid-range building for good measure
+    """
+Explanation: Documents pick_edge_case_spread's selection strategy: smallest,
+largest-available, and one mid-range building, used by demo.py to exercise
+a representative range of building sizes as a smoke test.
+
+[sample_data.py : 93]
+        # fall back: max floors, then max footprint among those
+Explanation: Explains the fallback logic when no single row in the dataset
+simultaneously has both the maximum floor count and the maximum footprint
+-- in that case, the code picks the largest footprint among rows that at
+least have the maximum floor count.
+
+
+--------------------------------------------------------------------------------
+demo.py  (dev utility -- end-to-end smoke test)
+--------------------------------------------------------------------------------
+
+[demo.py : 1-8]
+"""
+demo.py
+=======
+End-to-end run: pull a small spread of sample structures out of
+regular_buildings.xlsx, build an OpenSeesPy model for each, validate it,
+and (as a cheap proof the model is actually analysis-ready) run a linear
+static gravity analysis and report the max vertical roof deflection.
+"""
+Explanation: Documents demo.py's purpose as a full end-to-end pipeline
+smoke test (build -> validate -> run a cheap linear-static gravity check),
+independent of the full nonlinear seismic pipeline in simulation.py -- a
+fast way to confirm the model-building code still produces analysis-ready
+models after any change.
+
+
+--------------------------------------------------------------------------------
+inspect_model.py  (dev utility -- manual model inspection)
+--------------------------------------------------------------------------------
+
+[inspect_model.py : 1-9]
+"""
+inspect_model.py
+================
+Shows the actual OpenSeesPy model that gets built -- real node
+coordinates, real element connectivity, the real material/loads
+that were assigned, and a real analysis result. This is what
+`build_model()` produces; validate_model() just checks it, it doesn't
+build anything on its own.
+"""
+Explanation: Documents inspect_model.py's purpose as a manual,
+human-readable dump of exactly what build_model() actually constructs --
+real coordinates, real connectivity, real material/load assignments, and a
+real gravity-analysis result -- useful for eyeballing correctness rather
+than just trusting validate_model()'s pass/fail report.
+
+[inspect_model.py : 39] # -- 1. Real nodes, with real coordinates --------------------------------
+[inspect_model.py : 47] # -- 2. Real base fixity ---------------------------------------------------
+[inspect_model.py : 52] # -- 3. Real elements, with real connectivity ------------------------------
+[inspect_model.py : 65] # -- 4. Real material properties assigned ----------------------------------
+[inspect_model.py : 71] # -- 5. Real loads applied ---------------------------------------------------
+[inspect_model.py : 77] # -- 6. Validation ------------------------------------------------------------
+[inspect_model.py : 84] # -- 7. Real analysis, real numbers ------------------------------------------
+Explanation: These seven section headers number and label each successive
+piece of the model this script prints out, walking through nodes -> base
+fixity -> elements -> material -> loads -> validation -> a real gravity
+analysis, in the same order build_model() actually assembles them.
+
+
+--------------------------------------------------------------------------------
+test_building.py
+--------------------------------------------------------------------------------
+No comments or docstrings were present in this file.
+
+
+--------------------------------------------------------------------------------
+godot_ui/scripts/camera_rig.gd  (User Interface Layer -- free-fly camera)
+--------------------------------------------------------------------------------
+
+[camera_rig.gd : 18-20]
+## Call after externally repositioning/reorienting the camera (e.g. via
+## look_at) so mouse-look continues smoothly from the new orientation
+## instead of snapping back to whatever _yaw/_pitch were last set to.
+Explanation: Documents why sync_look_from_rotation() must be called any
+time the camera is moved/aimed programmatically (e.g. main.gd's
+_frame_camera_on_structure calling look_at() to auto-frame a newly
+generated structure) -- without this call, the mouse-look controls would
+snap the camera back to its old yaw/pitch the next time the user
+right-click-drags to look around, since those internal tracking variables
+wouldn't know the camera had been moved externally.
+
+
+--------------------------------------------------------------------------------
+godot_ui/scripts/member_visual.gd
+--------------------------------------------------------------------------------
+No comments were present in this file.
+
+
+--------------------------------------------------------------------------------
+godot_ui/scripts/static_structure_view.gd
+--------------------------------------------------------------------------------
+No comments were present in this file.
+
+
+--------------------------------------------------------------------------------
+godot_ui/scripts/structure_generator.gd
+--------------------------------------------------------------------------------
+No comments were present in this file. Its algorithm is documented instead
+by the module docstring of its Python mirror, procedural_content_generation.py
+(see that section above) -- both files implement the identical node-key
+and column/beam connectivity rules.
+
+
+--------------------------------------------------------------------------------
+godot_ui/scripts/structure_validator.gd
+--------------------------------------------------------------------------------
+No comments were present in this file.
+
+
+--------------------------------------------------------------------------------
+godot_ui/scripts/main.gd  (User Interface Layer -- app shell, inputs,
+Python subprocess orchestration, terminal/results display, camera framing)
+--------------------------------------------------------------------------------
+
+[main.gd : 488]
+    # App Navbar spanning full width edge-to-edge
+Explanation: Labels the block of code building the in-app navigation bar
+(logo, back-to-home button) that spans the full width of the app view.
+
+[main.gd : 530]
+    # Main App Workspace Body
+Explanation: Labels the block of code building the main panel that holds
+the entire app workspace (sidebar, viewport, terminal) below the navbar.
+
+[main.gd : 559]
+    # Left Sidebar: Inputs & Controls
+Explanation: Labels the block of code building the left sidebar containing
+the structural/seismic input fields (bay counts, bay widths, floor count,
+story height, magnitude, duration) and the GENERATE/RUN/RESET buttons.
+
+[main.gd : 629]
+    # Center Column: Viewport & Camera Controls Overlay
+Explanation: Labels the block of code building the center 3D viewport
+panel and the floating camera-controls help overlay drawn on top of it.
+
+[main.gd : 690]
+    # Right Column: Simulation Preview & Iteration Records
+Explanation: Labels the block of code building the right-hand column
+containing the (currently static/placeholder) simulation preview box and
+the iteration-records list, which will eventually reflect the Feedback
+Engine's multi-iteration history once that layer exists.
+
+[main.gd : 726]
+    # Drag handle: grab the top edge of the terminal panel to resize it.
+Explanation: Labels the draggable ColorRect strip that lets the user
+resize the terminal panel's height by dragging its top edge, handled by
+_on_terminal_drag_handle_input.
+
+[main.gd : 736]
+    # Bottom Terminal Section
+Explanation: Labels the block of code building the terminal panel at the
+bottom of the app -- the same terminal that _log_python_results() prints
+the NLTHA results summary and PASS/FAIL verdict into.
+
+[main.gd : 965-966]
+    # World axes per StructureGenerator: X = plan X, Y = story height
+    # (vertical), Z = plan Y.
+Explanation: Documents the Godot-side 3D world axis convention used when
+auto-framing the camera on a generated structure -- notably different from
+seismic_simulation.py's convention (where Z is vertical), because Godot's
+own 3D space uses Y-up. This distinction matters for anyone translating
+coordinates between the Python analysis model and the Godot visual scene.
+
+[main.gd : 973-975]
+    # Distance needed to fit the structure's bounding sphere within the
+    # camera's vertical FOV, from a fixed diagonal viewing direction, plus
+    # a margin so the structure isn't touching the viewport edges.
+Explanation: Explains the trigonometry used in _frame_camera_on_structure
+to compute how far back the camera needs to sit so the whole generated
+structure fits inside its field of view from a fixed diagonal angle, with
+an extra multiplier so the structure doesn't touch the viewport edges.
+
+[main.gd : 996-999]
+    # Simulate exactly the structure currently on display -- geometry stays
+    # pinned to whatever Generate last actually built. Only magnitude/duration
+    # come from the live fields, so editing a bay/story field afterward can't
+    # quietly rebuild the simulated structure with a different footprint.
+Explanation: Documents a deliberate UX/correctness decision: pressing RUN
+SIMULATION always analyzes the exact geometry that was last generated by
+GENERATE STRUCTURE, even if the user has since edited the bay/story input
+fields without re-generating -- only magnitude and duration are read live,
+preventing a mismatch between what's visually displayed and what's
+actually analyzed.
+
+[main.gd : 1013]
+    # Export the exact generated geometry for the Python OpenSeesPy runner.
+Explanation: Labels the block in _export_topology_for_python that writes
+the currently-pinned structure's geometry to sample_topology.json, which
+simulation.py subsequently reads via its --topology argument.
+
+[main.gd : 1139-1143]
+    # topology_valid checks the generated node/element graph is well-formed
+    # (right counts, fully connected, base fixed) -- independent of the
+    # seismic RESULT above. Nothing here modifies the topology or re-runs
+    # the simulation yet -- that's the not-yet-built Feedback Engine; this
+    # is purely evaluation and reporting.
+Explanation: This is the terminal-panel-facing explanation of the same
+"topology_valid is graph well-formedness, not seismic performance"
+distinction documented in validation.py, plus an explicit reminder that
+nothing in this reporting code modifies the topology or re-triggers a new
+generation/simulation cycle -- that closed-loop behavior is the Feedback
+Engine's job, not yet built.
+
+================================================================================
+END OF guide.txt
+================================================================================

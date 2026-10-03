@@ -1,0 +1,14 @@
+{
+  "bay_count_x": 3,
+  "bay_count_y": 3,
+  "bay_width_x": 6.0,
+  "bay_width_y": 6.0,
+  "building_id": 9001,
+  "duration": 15.0,
+  "floor_count": 4,
+  "floor_load_kpa": 6.0,
+  "magnitude": 5.0,
+  "roof_load_kpa": 3.0,
+  "story_height": 3.5,
+  "units": "m"
+}

@@ -1,16 +1,7 @@
-"""
-demo.py
-=======
-End-to-end run: pull a small spread of sample structures out of
-regular_buildings.xlsx, build an OpenSeesPy model for each, validate it,
-and (as a cheap proof the model is actually analysis-ready) run a linear
-static gravity analysis and report the max vertical roof deflection.
-"""
-
 import openseespy.opensees as ops
 
 from sample_data import pick_edge_case_spread, sample_topology
-from model_builder import build_model
+from seismic_simulation import build_model
 from validation import validate_model
 
 
