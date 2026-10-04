@@ -4,23 +4,6 @@
   "order": "upsizing sequence, smallest to largest",
   "sections": [
     {
-      "name": "W10X15",
-      "metric_name": "W250X22.3",
-      "d_m": 0.254,
-      "bf_m": 0.102,
-      "tf_m": 0.00686,
-      "tw_m": 0.00584,
-      "A_m2": 0.00285,
-      "Ix_m4": 2.87e-05,
-      "Iy_m4": 1.2e-06,
-      "Sx_m3": 0.000226,
-      "Sy_m3": 2.38e-05,
-      "rx_m": 0.1,
-      "ry_m": 0.0206,
-      "J_m4": 4.33e-08,
-      "mass_kg_per_m": 22.3
-    },
-    {
       "name": "W12X26",
       "metric_name": "W310X38.7",
       "d_m": 0.31,

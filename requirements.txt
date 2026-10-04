@@ -1,3 +1,5 @@
 openseespy>=3.8
 pandas>=2.0
 openpyxl>=3.1
+pillow==12.3.0
+reportlab==5.0.1

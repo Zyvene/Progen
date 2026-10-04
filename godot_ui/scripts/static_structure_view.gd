@@ -254,7 +254,7 @@ func _add_member(kind: String, a_key, b_key, pos_a: Vector3, pos_b: Vector3, sec
 	if kind == "column":
 		_node_support[ids[1]] = [ids[0], pos_a.distance_to(pos_b)]
 	_visuals.append({
-		"visual": visual, "kind": kind, "section": section_name, "story": story,
+		"visual": visual, "kind": kind, "section": section_name, "story": story, "color": color,
 		"is_perimeter": is_perimeter, "a": pos_a, "b": pos_b, "depth_hint": depth_hint,
 		"na": ids[0], "nb": ids[1],
 	})
@@ -267,6 +267,15 @@ func _upsize_where(predicate: Callable) -> void:
 		entry["section"] = upsized
 		var visual: MemberVisual = entry["visual"]
 		visual.setup(UPSIZED_COLOR, entry["a"], entry["b"], _sections[upsized], entry["depth_hint"])
+		entry["color"] = UPSIZED_COLOR
+
+func set_highlights(visible_colors: bool) -> void:
+	for entry in _visuals:
+		var visual: MemberVisual = entry["visual"]
+		if visible_colors:
+			visual.set_color(entry["color"])
+		else:
+			visual.set_color(COLUMN_COLOR if entry["kind"] == "column" else BEAM_COLOR)
 
 func _add_bracing(topo: Dictionary, levels: Array, axis: String, perimeter_only: bool) -> void:
 	var nodes: Dictionary = topo["nodes"]

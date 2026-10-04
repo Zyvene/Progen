@@ -33,7 +33,7 @@ func _update_look() -> void:
 			var mouse_delta: Vector2 = mouse_pos - _last_mouse_pos
 			_yaw -= mouse_delta.x * look_sensitivity
 			_pitch -= mouse_delta.y * look_sensitivity
-			_pitch = clamp(_pitch, deg_to_rad(-85.0), deg_to_rad(85.0))
+			_pitch = clamp(_pitch, deg_to_rad(-90.0), deg_to_rad(90.0))
 			rotation = Vector3(_pitch, _yaw, 0.0)
 		_has_last_mouse = true
 	else:

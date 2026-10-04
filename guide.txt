@@ -83,32 +83,76 @@ Output files (wherever --output / --history point):
 -----------------------------
 - Open the `godot_ui/` folder as a project in the Godot 4.4.1 editor and run
   the main scene.
-- `GENERATE STRUCTURE` builds and displays the frame from the sidebar inputs,
-  with every member drawn as a W12X26 I-profile at true size.
+- The sidebar first shows only the Structural Inputs. `Generate Structure`
+  builds and displays the frame, with every member drawn as a W12X26
+  I-profile at true size, and replaces the Structural Inputs with the
+  Seismic Inputs (magnitude, duration), `Run Simulation` and
+  `Reset Structure` (Generate shows a 1 s "Generating structure..." box
+  first). While a run is processing, `Run Simulation` is hidden and the
+  structural and seismic values are shown read-only ("Your Structural
+  Inputs", "Your Seismic Inputs"); they become editable again when the
+  run finishes or is cancelled.
+- The "- 100% +" in the landing page and app headers (or Ctrl + / Ctrl -)
+  zooms the page from 70 % to 130 %; the level is shared by both pages. Short pop-up notifications confirm generate,
+  simulation start, reset, zoom and input errors.
+- The view cube in the top-right corner of the 3D panel turns with the
+  camera; its faces are colored by axis (X red, Y green, Z blue, darker for
+  the negative side). Clicking a face turns the camera smoothly to that view:
+  +X / -X show the X-direction frames (the Bay X bays across the screen) and
+  +Y / -Y the Y-direction frames (the Bay Y bays), with that axis increasing
+  to the right for + and to the left for -; +Z is the top view and -Z the
+  bottom view. When only one
+  face is visible, arrows appear on the four sides of the cube; each turns
+  the camera to the face on that side of the screen. The keyboard arrow keys
+  do the same (from any view), except while typing in an input field. `Isometric` gives
+  equal angles to X, Y and Z; `Reset View` returns to the default angled
+  view.
+- `Colors` (eye icon, under Reset View) turns the feedback colors (red
+  changes, orange braces, purple struts) off and on in the 3D view; it is
+  on again whenever another iteration is shown.
+- The semi-transparent download button in the Simulation Preview corner
+  saves the displayed iteration's GIF (not available for a gravity
+  collapse, whose GIF is a single still image).
 - The rule dropdown shows visual mock-ups of each Table 1 action (W-shape
   upsizing, X-bracing, mid-height struts); no analysis is run for previews.
-- `RUN SIMULATION` creates `runs/run_<date-time>/`, writes `input.json`
+- `Run Simulation` creates `runs/run_<date-time>/`, writes `input.json`
   there, and launches `simulation.py --run-dir` (from `.venv-1`) as a
   background subprocess that runs the closed loop automatically:
   Iteration 0 -> feedback -> Iteration 1 ... (up to 10 feedback
   iterations). Each finished iteration appears in the Iteration Records
   panel with its results printed in the terminal; click an entry to view
-  that iteration again.
+  that iteration again. Iteration 0 is shown as "Initial Iteration" in the
+  records, the preview and replay labels, the terminal and the PDF report.
 - While an iteration is simulating, the main viewport shakes the structure
   with the displacements OpenSeesPy is computing (magnified; factor shown
   bottom-left). The shake ends when that iteration is saved.
-- After the run, the Simulation Preview box shows the selected iteration's
-  structure; click it to replay that iteration's recorded shake in both the
-  preview and the main viewport
-  (iteration_<n>/frames.json) in real time.
+- The Simulation Preview box loops a GIF of the iteration on display
+  (iteration_<n>/simulation.gif, made by gif_exporter.py right after the
+  iteration is saved, 3x speed). After the run, click the box to replay that
+  iteration's recorded shake (iteration_<n>/frames.json) in real time in the
+  main viewport.
+- The download (⬇) button beside each Iteration Records row saves that iteration as
+  a PDF report (picture of the structure, then Generation, Simulation,
+  Performance Metrics, Evaluation, Feedback and a written Interpretation),
+  made by pdf_report.py.
 - A member falls to the ground at the moment its strain first exceeds the
   rupture strain (display only; the analysis keeps the member). Columns
   keep their length, so during a collapse the building sways and sinks.
   A collapsed iteration's playback ends on the last computed frame with
   the collapse time shown.
-- `Clean Previous Runs` permanently deletes every `runs/run_*` folder after
-  a confirmation dialog; it is disabled while a simulation is running.
-- `RESET STRUCTURE` clears the viewport and terminal.
+- `Clear Previous Runs` permanently deletes every `runs/run_*` folder after
+  a confirmation dialog and resets the screen to the Structural Inputs; it is
+  disabled while a simulation is running.
+- While a run is processing, `Reset Structure` becomes `Cancel Simulation`:
+  it force-stops the simulation, keeps the generated structure and the
+  Seismic Inputs, and deletes the unfinished run folder.
+- `Reset Structure` clears the viewport and terminal and brings back the
+  Structural Inputs.
+- The terminal marks each line with a success, warning or error icon (a
+  loading icon for in-progress lines; lines mentioning a failure get the
+  error icon, and the final run line is marked as an error when the final
+  result is FAIL); its `Clear` button empties it, and its
+  top edge can be dragged to resize it.
 
 
 ================================================================================

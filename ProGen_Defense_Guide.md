@@ -28,7 +28,7 @@ UI (Godot)  --inputs-->  GENERATE STRUCTURE (preview grid, W12X26 I-profiles)
   | all pass? stop.  n = 10? stop.  otherwise feedback -> new model state -> n+1     |
   +----------------------------------------------------------------------------------+
 Godot polls progress.json + iteration folders -> Iteration Records panel, red = changed members
-Click the Simulation Preview -> replay iteration_n/frames.json in the preview and the main view
+Simulation Preview loops iteration_n/simulation.gif; click it -> replay iteration_n/frames.json in the main view
 ```
 
 Iteration 0 is the generated structure before any feedback, so **Iteration 0 is the open-loop result**. Iterations 1 to 10 are the closed-loop refinements.
@@ -42,9 +42,9 @@ Iteration 0 is the generated structure before any feedback, so **Iteration 0 is 
 | Material | AK Steel Grade 25: Fy 170 MPa, Fu 290 MPa, E 200 GPa, elongation 26 %, density 7.87 g/cc | `input_management.py` 117-124 | Manuscript Table 2 (Look Polymers datasheet) |
 | Poisson's ratio | 0.30 → G = E / 2(1+ν) = 76,923 MPa | `input_management.py` 124, 134-136 | **Assumption** (not on the datasheet) |
 | Post-yield hardening ratio b | (290 − 170) / (0.26 − 0.00085) / 200,000 = **0.002315** | `input_management.py` 146-151 | Derived from Table 2 |
-| Sections | 17 AISC W-shapes, W10X15 … W36X529 | `w_sections.json` | AISC Shapes Database v16.0 (Aug 2023), consistent with the AISC Steel Construction Manual, 16th ed. |
+| Sections | 17 AISC W-shapes listed, W10X15 … W36X529; members start at W12X26 and are only upsized, so 16 are reachable and W10X15 is never used | `w_sections.json` | AISC Shapes Database v16.0 (Aug 2023), consistent with the AISC Steel Construction Manual, 16th ed. |
 | Starting section | **W12X26** for every member | `input_management.py` 10 | Engineer consultation (named W10×15 and W12×26; W12×26 chosen because it survives gravity for the default building) |
-| Loads | floor 6 kPa, roof 3 kPa | `main.gd` 1194-1217 (export), `input_management.py` 23-24 | Design assumption within the LSDSE-derived ranges |
+| Loads | floor 6 kPa, roof 3 kPa | `main.gd` 2010-2034 (export), `input_management.py` 23-24 | Design assumption within the LSDSE-derived ranges |
 | Drift limit | 0.025 h if T < 0.7 s, else 0.020 h | `performance_evaluation.py` 5-7, 19-22 | NSCP 2015 §208.6.5.1 |
 | NLTHA drift used directly | not reduced | `performance_evaluation.py` 124-125 | NSCP Eq. 208-21 Exception; §208.5.3.6.3.1 |
 | P-Delta | on every column | `seismic_simulation.py` 282 | NSCP §208.6.4.2 ("shall consider PΔ effects") |
@@ -66,9 +66,10 @@ Iteration 0 is the generated structure before any feedback, so **Iteration 0 is 
 ### 2.1 The user interface: inputs, validation, preview (Godot)
 
 **`godot_ui/scripts/main.gd`**
-- **136-163 `_ready` / `_load_w_sections`:** builds the UI, then reads `w_sections.json` from the project root. The main view and the Simulation Preview both get every W-shape's real dimensions.
-- **990-1034 `_validate_inputs`:** Input Management on the UI side. It enforces the manuscript ranges: bays 1-10, bay widths 3-9 m, floors 1-10, story height 3-5 m, magnitude 1-10, duration 10-30 s. Invalid inputs are blocked before anything is generated.
-- **1082-1120 `_on_generate_pressed`:** calls the generator and validator, then draws the structure.
+- **226-256 `_ready` / `_load_w_sections`:** builds the UI, then reads `w_sections.json` from the project root so the main view knows every W-shape's real dimensions.
+- **1464-1510 `_validate_inputs`:** Input Management on the UI side. It enforces the manuscript ranges: bays 1-10, bay widths 3-9 m, floors 1-10, story height 3-5 m, magnitude 1-10, duration 10-30 s. Invalid inputs are blocked before anything is generated.
+- **1658-1724 `_on_generate_pressed`:** calls the generator and validator, then draws the structure after a 1 s "Generating structure..." loading box (a UI pause, not computation; Generate is disabled meanwhile). The app header has a 70-130 % interface zoom (`_set_ui_zoom`, `_apply_ui_zoom_layout`) and short pop-up notifications (`_show_toast`).
+- **1859-1951 camera framing and views:** `_frame_camera_on_structure` fits the camera to the building. The view cube (`view_cube.gd`, top right of the 3D panel) draws six faces (X red, Y green, Z blue) and turns with the camera. ±X show the X-direction frames (Bay X bays across the screen) and ±Y the Y-direction frames (Bay Y bays), with that axis increasing to the right for + and to the left for −; ±Z are the top and bottom views (Godot's x is structural X, Godot's z is structural Y, Godot's y is structural Z); when only one face is visible it shows four arrows that turn to the face on that side of the screen. Clicking a face or an arrow, Isometric (equal angles to X, Y and Z) or Reset View (the default angled view) moves the camera in a 0.45 s eased turn around the building center at the fit distance (`_animate_camera`). `camera_rig.gd` allows pitch to ±90° so top and bottom views hold.
 
 **`godot_ui/scripts/structure_generator.gd` 4-62:** the procedural grid on the Godot side. Nodes at every (level, row, col); a column from each node to the one above; beams along X and Y on every floor.
 - Default building: **80 nodes, 64 columns, 96 beams = 160 members**.
@@ -88,10 +89,11 @@ Iteration 0 is the generated structure before any feedback, so **Iteration 0 is 
 ### 2.2 Starting a run, and run reuse (Godot → Python)
 
 **`main.gd`**
-- **1140-1177 `_on_simulate_pressed`:** blocks a second RUN while one is running, creates the run folder, writes `input.json`.
-- **1182-1192 `_create_run_dir`:** `runs/run_<date-time>/`.
-- **1194-1217 `_export_topology_for_python`:** writes the building, loads (6 / 3 kPa), magnitude and duration in metres.
-- **1219-1247 `_start_python_nltha`:** launches `.venv-1/Scripts/python.exe simulation.py --topology input.json --duration 15 --magnitude 5 --run-dir <folder>` as a background process.
+- **1952-1994 `_on_simulate_pressed`:** blocks a second RUN while one is running, creates the run folder, writes `input.json`.
+- **1998-2009 `_create_run_dir`:** `runs/run_<date-time>/`.
+- **2010-2034 `_export_topology_for_python`:** writes the building, loads (6 / 3 kPa), magnitude and duration in metres.
+- **2035-2065 `_start_python_nltha`:** launches `.venv-1/Scripts/python.exe simulation.py --topology input.json --duration 15 --magnitude 5 --run-dir <folder>` as a background process.
+- **2470-2485 `_app_root` / `_engine_dir` / `_python_executable`:** in the editor the tool's folder is the project folder and Python is `.venv-1`; in the exported `ProGen.exe` the folder is the one holding the `.exe`, the analysis files are in its `engine\` subfolder and Python is the bundled `python\python.exe` (Python 3.12.10 embeddable with openseespy 3.8.0.0, numpy 2.5.3, pillow 12.3.0, reportlab 5.0.1). The installer (`ProGen_V1_Setup.exe`, Inno Setup; app name "ProGen V1", version 1.0, PG icon from `assets/images/iconpcg.png`) installs per user to `%LOCALAPPDATA%\Programs\ProGen V1`, so `runs\` stays writable without admin rights.
 
 **`simulation.py`**
 - **25-47:** reads arguments and loads the topology (`input_management.BuildingTopology.from_dict`, `input_management.py` 97-114, which converts metres to the internal feet storage).
@@ -229,11 +231,11 @@ Iteration 0 is the generated structure before any feedback, so **Iteration 0 is 
 
 ### 2.9 Feedback engine: Table 1 actions — `feedback_engine.py`
 
-- **11-12:** the 17 sections in upsizing order (smallest → largest).
+- **11-12:** the 16 listed sections in upsizing order (smallest → largest); `select_section` only searches above the current section, so from W12X26 a member can reach 15 larger sections.
 - **26-36 `select_section`:** skip-forward sizing. The smallest listed section that meets the requirement, **at least one step** up. If `one_step` is set, exactly one step (used after a seismic collapse). Returns None at W36X529 ("section limit reached").
 - **39-41 `_strength_requirements`:** A ≥ A_current × ratio and Sx ≥ Sx_current × ratio (first-order: stress ∝ 1/A and 1/S).
 - **44-89 `_Requests`:** collects every request. **If two rules ask for the same member, the larger section wins** (55-65). Braces are added or upsized; struts added.
-- **148-279 `apply_feedback`: the rule-to-action map (all rules apply together).**
+- **148-281 `apply_feedback`: the rule-to-action map (all rules apply together).**
 
 | Rule | Lines | Action |
 |---|---|---|
@@ -241,14 +243,14 @@ Iteration 0 is the generated structure before any feedback, so **Iteration 0 is 
 | 2 Buckling | 170-177 | add a Y mid-height strut (preferring a Y-braced bay); if already strutted, upsize for ry ≥ × √ratio |
 | 3 Rupture | 179-180 | upsize that member |
 | 4 Floor IDR | 182-185 | X-brace every bay of that floor, both directions (existing braces: upsize) |
-| 5 Soft story | 187-191 | upsize that story's columns for Ix (X) or Iy (Y) ≥ × ratio |
-| 6 Mid-story | 197-201 | X-brace perimeter bays of those floors |
-| 7 Directional | 203-205 | X-brace the weak direction's bays |
-| 8 Roof | 207-218 | upsize the columns of the story with the greatest drift (Ix or Iy) |
-| 9 Torsion | 220-225 | X-brace all perimeter bays, all floors |
-| 10 Mean stress | 227-234 | upsize every member, brace, strut |
+| 5 Soft story | 187-193 | upsize that story's columns for Ix (X) or Iy (Y) ≥ × ratio, and X-brace every bay of that story in the soft direction (existing braces: upsize) |
+| 6 Mid-story | 199-203 | X-brace perimeter bays of those floors |
+| 7 Directional | 205-207 | X-brace the weak direction's bays |
+| 8 Roof | 209-220 | upsize the columns of the story with the greatest drift (Ix or Iy) |
+| 9 Torsion | 222-227 | X-brace all perimeter bays, all floors |
+| 10 Mean stress | 229-236 | upsize every member, brace, strut |
 
-- **236-279:** applies the requests to a copy of the state and logs every action (target, from, to, rules). **Sections only ever increase; bracing is only ever added.**
+- **238-281:** applies the requests to a copy of the state and logs every action (target, from, to, rules). **Sections only ever increase; bracing is only ever added.**
 
 ### 2.10 The closed loop — `pipeline.py`
 
@@ -273,18 +275,20 @@ Iteration 0 is the generated structure before any feedback, so **Iteration 0 is 
 ### 2.11 Showing the results (Godot)
 
 **`main.gd`**
-- **115-134 `_process`:** every screen frame, advances the live shake and the preview replay. While Python runs, polls the run every 0.1 s.
-- **1259-1290 `_poll_run`:** each new `iteration_n` folder becomes an Iteration Records entry and is drawn and printed immediately. It then reads `progress.json` for the line "Iteration n: simulating step s/2529" and the live shake frame.
-- **1356-1386 `_finish_run`:** handles `reuse.json` (loads the existing run), reports replaced older runs, an unexpected stop or an error, and prints the stop reason.
-- **1388-1429 `_add_iteration_entry` / `_on_iteration_pressed` / `_show_iteration`:** a clickable record per iteration. It redraws that iteration's model state in the main view and the Simulation Preview, with members changed by feedback in red.
-- **1543-1650 `_log_record`:** the terminal report:
+- **177-197 `_input`:** Ctrl + / Ctrl − (also the keypad keys) change the interface zoom on both the landing page and the app (one shared 70-130 % level, `_build_zoom_controls` in both headers); in the app, the arrow keys do what the view cube's arrows do (`view_cube.gd` `arrow_normal`), except while a text field has focus.
+- **198-225 `_process`:** every screen frame, advances the live shake, the 3D replay, the Simulation GIF and any PDF export. While Python runs, polls the run every 0.1 s.
+- **2076-2108 `_poll_run`:** each new `iteration_n` folder becomes an Iteration Records entry and is drawn and printed immediately. It then reads `progress.json` for the line "Iteration n: simulating step s/2529" and the live shake frame.
+- **2174-2207 `_finish_run`:** handles `reuse.json` (loads the existing run), reports replaced older runs, an unexpected stop or an error, and prints the stop reason.
+- **2208-2273 and 2318-2339 `_add_iteration_entry` / `_on_iteration_pressed` / `_show_iteration`:** a clickable record per iteration (Iteration 0 is labelled "Initial Iteration" here, in the preview and replay labels, the terminal and the PDF report; `_iteration_name` 2275-2277), with a download (⬇) button beside it that saves the PDF report. PASS/FAIL is shown in bold. It redraws that iteration's model state in the main view, with members changed by feedback in red, and shows its Simulation GIF in the preview panel. The **Colors** button under the view cube (`_set_highlights`, 2340) switches the feedback colors (red changes, orange braces, purple struts) off and on; it is back on for every iteration shown. The semi-transparent ⬇ in the Simulation Preview corner (`_on_gif_download_pressed` / `_on_gif_path_selected`, up to 2381) saves the displayed iteration's GIF (disabled while it renders and for a gravity collapse, whose GIF is one still image).
+- **2619-2727 `_log_record`:** the terminal report:
   - input (PGA, duration, record length);
   - T and the NSCP limit;
   - element, floor and structure results;
   - triggered rules with demand ratios;
   - peak metrics (the manuscript's four dependent variables: peak stress, peak displacement, peak deformation, MaxIDR);
   - the feedback that produced the iteration and its sizing mode.
-- **1690-1722 Clean Previous Runs:** a confirmation dialog, then permanent deletion of `runs/run_*`.
+- **2766-2811 Clear Previous Runs:** a confirmation dialog, then permanent deletion of `runs/run_*`, and the screen resets to the Structural Inputs; refused while a simulation runs, GIFs are being rendered or a PDF is being saved.
+- **2838-2919 Cancel Simulation:** while a run is processing, Reset Structure becomes Cancel Simulation, Run Simulation is hidden and Your Structural Inputs and Your Seismic Inputs are shown as read-only summaries; they become editable again when the run finishes or is cancelled. Cancel force-stops the Python process (and that run's GIF or PDF export, if any), keeps the generated structure and the Seismic Inputs on screen, and deletes the unfinished run folder (retried for up to 10 s while Windows releases the files).
 
 ### 2.12 The visual shake and collapse view (display only)
 
@@ -295,14 +299,24 @@ Iteration 0 is the generated structure before any feedback, so **Iteration 0 is 
 - `pipeline.py` 38-64: the live frame goes to `progress.json` every 0.1 s; `live_state.json` says which structure is being analyzed. `iteration_n/frames.json` keeps the whole record for replay.
 
 **Live shake while simulating (`main.gd`)**
-- **1302-1315 `_begin_live_shake`:** reads `live_state.json` and redraws the structure being analyzed.
-- **1317-1334 `_set_live_target`:** takes the newest frame, updates the magnification, drops newly ruptured members.
-- **1336-1345 `_update_live_shake`:** eases the drawn shape toward the newest frame every screen frame.
-- **1347-1354 `_stop_live_shake`:** the shake stops when that iteration's folder is saved; the saved view replaces it.
+- **2119-2134 `_begin_live_shake`:** reads `live_state.json` and redraws the structure being analyzed.
+- **2135-2153 `_set_live_target`:** takes the newest frame, updates the magnification, drops newly ruptured members.
+- **2154-2164 `_update_live_shake`:** eases the drawn shape toward the newest frame every screen frame.
+- **2165-2173 `_stop_live_shake`:** the shake stops when that iteration's folder is saved; the saved view replaces it.
 
 **Replay after the run (`main.gd`)**
-- **1467-1495 `_on_preview_input`:** clicking the Simulation Preview loads `frames.json`.
-- **1497-1541 `_update_preview_playback`:** plays it in real time (0.1 s frames, linearly blended) in **both** the preview and the main view. At the end it holds the last frame; a collapsed iteration shows "collapse at t = X s".
+- **2544-2572 `_on_preview_input`:** clicking the Simulation Preview loads `frames.json`.
+- **2573-2618 `_update_preview_playback`:** plays it in real time (0.1 s frames, linearly blended) in the main view, while the preview panel keeps looping its GIF. At the end it holds the last frame; a collapsed iteration shows "collapse at t = X s".
+
+**Simulation GIF (preview panel)**
+- `gif_exporter.py` (the "Simulation GIF Exporter" of Figure 10): reads `frames.json` and `record.json` of a saved iteration and writes `iteration_n/simulation.gif` (520 x 280 px, image only, loops).
+  - Same camera angle, colors and red highlights as the 3D view; members are lines whose width follows the section depth.
+  - Same display rules as the 3D replay: magnification, column-length rule, falling members.
+  - Every third 0.1 s frame shown 0.1 s apart (3x speed); a collapsed iteration ends on the collapse with a 1.5 s hold; a gravity collapse is one still image.
+  - The palette always contains every member color, so thin members keep their color; the exporter version is stored in the GIF comment so outdated GIFs are rebuilt.
+- `main.gd` 2382-2543: `_set_preview` / `_show_gif` / `_play_gif` / `_request_gif_export` / `_update_gif`. Godot starts the exporter as a separate process right after each iteration is saved and once per opened run (it skips GIFs that are already current), decodes the GIF on a worker thread, caches the last three, loops the frames at their own delays, and reloads a GIF whose file changed.
+- `gif_decoder.gd`: GIF reader written for Godot (LZW, global and local color tables, frame delays, transparency, disposal); verified pixel-identical to Pillow on four test GIFs.
+- `gif_exporter.py` is not in the tool fingerprint, so adding or changing it never forces old runs to re-simulate.
 
 **How a frame moves the model (`static_structure_view.gd`)**
 - **69-92 `apply_frame`:**
@@ -310,7 +324,20 @@ Iteration 0 is the generated structure before any feedback, so **Iteration 0 is 
   - **Column lengths are kept:** each column node is placed from the node below using the computed story drift (capped at the column length), and drops so the column keeps its length. A story swayed as far as its column length lies flat. At ordinary drifts the drop is invisible.
   - Every member is drawn straight between its two end nodes, so nothing floats; base nodes stay fixed.
 - **100-129 `drop_member`, 131-147 `update_falls`:** at a member's first rupture time it detaches and falls (9.81 m/s², turning flat, at its true length) and comes to rest on the ground. The analysis keeps the member in the model; the fall is a display of the rupture event.
-- **Magnification** (`main.gd` 1292-1294): the record's peak node displacement is shown as 4 % of the building height, between ×1 and ×200. The factor is always on screen.
+- **Magnification** (`main.gd` 2109-2112): the record's peak node displacement is shown as 4 % of the building height, between ×1 and ×200. The factor is always on screen.
+
+### 2.13 PDF report per iteration (Output Layer)
+
+- **`main.gd` 2208-2317:** each Iteration Records row has a download (⬇) button. It opens a save dialog in the Downloads folder with the name `ProGen_<run>_iteration_<n>.pdf`, then runs `pdf_report.py` as a background process and reports "saved PDF report" or an error in the terminal.
+- **`pdf_report.py`** (ReportLab 5.0.1) reads `record.json`, `input.json` and `run_summary.json` of that iteration and writes an A4 report:
+  - a picture of the structure at rest without red highlights, drawn by `gif_exporter.render_still` and cropped to the structure;
+  - **GENERATION:** floors, bays, bay widths, story height, loads, material, member sections, X-braced bays, struts;
+  - **SIMULATION:** magnitude, strong-shaking duration, peak ground acceleration, record length and steps, fundamental period, collapse status;
+  - **PERFORMANCE METRICS:** peak stress, peak displacement X and Y, peak deformation, maximum story drift (all displacements in mm), maximum interstory drift ratio with its limit;
+  - **EVALUATION:** element, floor and structure levels with pass or fail, triggered rules as counts, and drift by floor;
+  - **FEEDBACK:** the changes that produced the iteration, grouped and counted, and the sizing mode;
+  - **INTERPRETATION:** paragraphs assembled from fixed sentence templates using only saved values (no AI text): a bold **PASSES** / **DOES NOT PASS** verdict with plain-language reasons from the triggered rules, peak stress as a share of yield, the largest drift ratio with its floor and direction against the NSCP limit, roof displacement against its limit, an "In short" sentence from the three evaluation levels, collapse status; then the change from the previous iteration (read from its record), what feedback did next (read from the next iteration's record) or why the run ended; and a closing note that the conclusions follow ProGen's criteria and are not a design certification.
+- `pdf_report.py` is not in the tool fingerprint; it only reads saved results.
 
 ---
 
@@ -330,7 +357,7 @@ Actual run: `simulation.py --run-dir` with the UI defaults (M5, 15 s). **Result:
 | 3 | FAIL | 2.874 → 2.0 % | 180.5 | 0.322 % | 14.4 / 23.4 | Rule 1 × 2 (1.062) |
 | **4** | **PASS** | 2.859 → 2.0 % | **169.6** (< 170) | 0.304 % | 14.2 / 23.6 | none |
 
-Drift stays far below the NSCP 2.0 % limit throughout (roof limit 0.020 × 14 m = 0.28 m). The deficiency is **strength**: the low AK Steel yield of 170 MPa against gravity plus earthquake bending. That is why only Rule 1 fires. Soft story, torsion (ratios 1.03-1.16 < 1.2) and the other rules stay clear. **This is also why the default building never gets X-bracing:** the bracing rules (4, 6, 7, 9) only trigger on drift or torsion failures.
+Drift stays far below the NSCP 2.0 % limit throughout (roof limit 0.020 × 14 m = 0.28 m). The deficiency is **strength**: the low AK Steel yield of 170 MPa against gravity plus earthquake bending. That is why only Rule 1 fires. Soft story, torsion (ratios 1.03-1.16 < 1.2) and the other rules stay clear. **This is also why the default building never gets X-bracing:** the bracing rules (4, 5, 6, 7, 9) only trigger on drift, soft-story or torsion failures.
 
 **Iteration 0 → 1: feedback on 38 overstressed members (demand-ratio sizing)**
 - **What failed:**
@@ -426,7 +453,8 @@ The roof displacement rises slightly while stress and IDR fall. The upsized fram
 
 - Association of Structural Engineers of the Philippines. (2015). *National Structural Code of the Philippines 2015, Vol. 1* (7th ed.). §208.5.2.3, §208.5.3.2, §208.5.3.6.1, §208.5.3.6.3, §208.6.2, §208.6.3, §208.6.4.2 (Eq. 208-21), §208.6.5.1, Tables 208-9 and 208-10.
 - American Institute of Steel Construction. (2023). *Steel Construction Manual* (16th ed.) / *AISC Shapes Database v16.0*.
-- Esteva, L., & Villaverde, R. (1973). Seismic risk, design spectra and structural reliability. *Proc. 5th WCEE*, 2586-2597 (coefficients via JCSS Probabilistic Model Code §2.17, Table 1).
+- Esteva, L., & Villaverde, R. (1973). Seismic risk, design spectra and structural reliability. *Proc. 5th WCEE*, 2586-2597.
+- Joint Committee on Structural Safety. (2002). *JCSS probabilistic model code: Part 2. Load models, Section 2.17: Earthquake*. https://www.jcss-lc.org/publications/jcsspmc/earthquake1b.pdf (Table 1: the Esteva & Villaverde coefficients 5.7 g, 0.8, 2, 40 km used by the tool).
 - Rezaeian, S., & Der Kiureghian, A. (2010). *Stochastic modeling and simulation of ground motions for performance-based earthquake engineering* (PEER Report 2010/02), Table 4.3 and §2.5; and the 2010 *EESD* article.
 - Chang, K.-H., & Cheng, C.-Y. (2020). Learning to simulate and design for structural engineering. *PMLR* 119, 1426-1436 (LSDSE parameter ranges; section-sizing framing).
 - McKenna, F., Scott, M. H., & Zhu, M. (2018). OpenSeesPy. *SoftwareX*, 7, 6-11 (the analysis engine: forceBeamColumn, Steel01, fiber sections, Newmark).

@@ -14,6 +14,8 @@ const COLOR_BLUE_SOFT := Color("#eaf2ff")
 const COLOR_BLUE_LINE := Color("#d7e6ff")
 const COLOR_CTA_TEXT := Color("#dbeafe")
 const COLOR_DARK_BORDER := Color("#1e2939")
+const DEFAULT_CAMERA_POSITION := Vector3(20, 16, 24)
+const DEFAULT_CAMERA_TARGET := Vector3(10, 6, 10)
 
 const RULE_NAMES: Array[String] = [
 	"Yield Stress", "Buckling", "Rupture Strain", "Floor IDR",
@@ -66,8 +68,13 @@ var structural_controls: VBoxContainer
 var structural_summary_box: VBoxContainer
 var structural_summary_title: Label
 var structural_summary_divider: HSeparator
+var seismic_summary_box: VBoxContainer
+var seismic_help_label: Label
+var generate_button: Button
+var generating: bool = false
 var simulation_controls: VBoxContainer
 var run_simulation_button: Button
+var reset_button: Button
 
 var rule_preview_dropdown: OptionButton
 
@@ -77,12 +84,11 @@ var term_scroll: ScrollContainer
 var terminal_panel: PanelContainer
 var structure_display: StaticStructureView
 var structure_camera: FreeCamera
-var structure_zoom_percent: int = 100
-var structure_zoom_label: Label
-var structure_zoom_target: Vector3 = Vector3.ZERO
 var generation_loading_overlay: PanelContainer
 var ui_zoom_percent: int = 100
-var ui_zoom_label: Label
+var ui_zoom_labels: Array[Label] = []
+var view_cube: ViewCube
+var camera_tween: Tween
 
 var has_structure: bool = false
 var current_params: Dictionary = {}
@@ -99,6 +105,20 @@ var iterations_shown: int = 0
 var last_poll_ms: int = 0
 var clean_runs_button: Button
 var clean_runs_dialog: ConfirmationDialog
+var pdf_dialog: FileDialog
+var gif_dialog: FileDialog
+var gif_download_button: Button
+var highlights_visible: bool = true
+var highlights_button: Button
+var highlights_icon: Control
+var pdf_request: Dictionary = {}
+var pdf_pid: int = -1
+var pdf_run_dir: String = ""
+var cancel_delete_dir: String = ""
+var cancel_delete_deadline_ms: int = 0
+var cancel_delete_next_ms: int = 0
+var pdf_output: String = ""
+var pdf_started_unix: float = 0.0
 
 const SHAKE_DISPLAY_FRACTION := 0.04
 const SHAKE_MIN_PEAK_M := 0.001
@@ -115,9 +135,29 @@ var live_magnification: float = 1.0
 var live_dropped: Dictionary = {}
 var live_carry_peak: float = 0.0
 
-var preview_view: StaticStructureView
-var preview_camera: Camera3D
+const GIF_POLL_MS := 300
+const GIF_CACHE_LIMIT := 3
+
+var preview_image: TextureRect
 var preview_hint: Label
+var gif_path: String = ""
+var gif_frames: Array = []
+var gif_delays: PackedFloat32Array = PackedFloat32Array()
+var gif_frame_index: int = 0
+var gif_frame_time: float = 0.0
+var gif_texture: ImageTexture
+var gif_cache: Dictionary = {}
+var gif_cache_order: Array = []
+var gif_task_id: int = -1
+var gif_task_path: String = ""
+var gif_task_key: String = ""
+var gif_task_result: Dictionary = {}
+var gif_last_poll_ms: int = 0
+var gif_export_pid: int = -1
+var gif_export_run: String = ""
+var gif_export_pending: Dictionary = {}
+var gif_checked_runs: Dictionary = {}
+var gif_playing_key: String = ""
 var preview_run_dir: String = ""
 var preview_index: int = -1
 var preview_frames: Array = []
@@ -134,13 +174,40 @@ var terminal_drag_active: bool = false
 var terminal_drag_start_mouse_y: float = 0.0
 var terminal_drag_start_height: float = 0.0
 
+func _input(event: InputEvent) -> void:
+	if not (event is InputEventKey and event.pressed):
+		return
+	var key: int = event.keycode
+	if event.is_command_or_control_pressed():
+		if key in [KEY_EQUAL, KEY_PLUS, KEY_KP_ADD] and not event.echo:
+			_change_ui_zoom(10)
+			get_viewport().set_input_as_handled()
+		elif key in [KEY_MINUS, KEY_KP_SUBTRACT] and not event.echo:
+			_change_ui_zoom(-10)
+			get_viewport().set_input_as_handled()
+		return
+	if event.echo or not app_view_container.visible or view_cube == null:
+		return
+	if get_viewport().gui_get_focus_owner() is LineEdit:
+		return
+	var directions := {KEY_UP: "up", KEY_DOWN: "down", KEY_LEFT: "left", KEY_RIGHT: "right"}
+	if directions.has(key):
+		_on_view_cube_face_pressed(view_cube.arrow_normal(directions[key]))
+		get_viewport().set_input_as_handled()
+
 func _process(delta: float) -> void:
 	_update_live_shake(delta)
 	_update_preview_playback(delta)
+	_update_gif(delta)
+	if gif_download_button:
+		gif_download_button.disabled = not (gif_frames.size() > 1 and gif_path != "" and FileAccess.file_exists(gif_path))
+	_update_pdf_export()
+	_update_cancel_delete()
 	if not python_simulation_running:
 		return
 	if not OS.is_process_running(python_simulation_pid):
 		python_simulation_running = false
+		_set_cancel_mode(false)
 		if is_instance_valid(clean_runs_button):
 			clean_runs_button.disabled = false
 		_poll_run()
@@ -175,7 +242,7 @@ func _ready() -> void:
 	_load_w_sections()
 
 func _load_w_sections() -> void:
-	var path := ProjectSettings.globalize_path("res://../w_sections.json")
+	var path := _engine_dir().path_join("w_sections.json")
 	if not FileAccess.file_exists(path):
 		push_warning("w_sections.json not found next to simulation.py")
 		return
@@ -186,7 +253,6 @@ func _load_w_sections() -> void:
 		push_warning("w_sections.json is not valid")
 		return
 	structure_display.set_sections(parsed["sections"])
-	preview_view.set_sections(parsed["sections"])
 
 func _load_assets() -> void:
 	font_inter = _load_font("res://assets/fonts/Inter-Variable.ttf")
@@ -196,7 +262,6 @@ func _load_assets() -> void:
 	tex_logo = _load_texture("res://assets/images/378c25b527b93f4d537c05f5e5e176bde7944f7d.png")
 	tex_hero = _load_texture_first([
 		"res://assets/images/progen_hero_new.jpg",
-		"res://assets/images/56cd8b20-4bf7-40c3-9106-51aef609b2a0.jpg",
 		"res://assets/images/f229d4a87587b430f06eac9a1721e00ff504c72a.png",
 	])
 	tex_wrench = _load_texture("res://assets/images/685eb8a845267f833aafffc00ac390593e26b82c.png")
@@ -206,7 +271,6 @@ func _load_assets() -> void:
 	tex_chart = _load_texture("res://assets/images/f08d789c81c84549efa2f4331d2fc82a84dac85a.png")
 	tex_3d = _load_texture("res://assets/images/dd653bd5aa09fcbc12b0969f9655854d3c28e400.png")
 
-	# Terminal status icons supplied by the user.
 	tex_terminal_success = _load_texture_first([
 		"res://assets/images/terminal_success.png",
 		"res://assets/images/line-md--circle-to-confirm-circle-transition.png",
@@ -219,15 +283,10 @@ func _load_assets() -> void:
 		"res://assets/images/terminal_warning.png",
 		"res://assets/images/line-md--alert (1).png",
 	])
-
 	tex_terminal_loading = _load_texture_first([
 		"res://assets/images/terminal_loading.jpg",
-		"res://assets/images/terminal_loading.svg",
-		"res://assets/images/eos-icons--loading.svg",
 	])
 
-	# Landing-page reference backgrounds. The helper tries a few likely filenames so
-	# the script still works if the OS/project removed the upload suffix.
 	tex_bg_hero = _load_texture_first([
 		"res://assets/images/Minimal Blue Wireframe Architecture Background(1).png",
 		"res://assets/images/Minimal Blue Wireframe Architecture Background.png",
@@ -247,10 +306,6 @@ func _configure_layout() -> void:
 	page_layout.add_theme_constant_override("separation", 0)
 
 func _build_fixed_hero_background() -> void:
-	# This wallpaper is attached to the root Control instead of the ScrollContainer.
-	# Because it is outside the scrolling content, it stays fixed on screen while
-	# Hero, Powerful Features, and How ProGen Works all scroll over it
-	# (similar to CSS background-attachment: fixed).
 	fixed_hero_background = TextureRect.new()
 	fixed_hero_background.name = "FixedHeroBackground"
 	fixed_hero_background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -275,7 +330,6 @@ func _switch_to_app() -> void:
 	app_view_container.visible = true
 
 func _switch_to_landing() -> void:
-	_set_ui_zoom(100)
 	app_view_container.visible = false
 	if fixed_hero_background:
 		fixed_hero_background.visible = true
@@ -366,6 +420,8 @@ func _build_navbar() -> void:
 	h_link.pressed.connect(func(): _scroll_to_node(how_panel))
 	right_group.add_child(h_link)
 
+	right_group.add_child(_build_zoom_controls())
+
 	var btn = _primary_button("Launch App", Vector2(140, 48))
 	btn.pressed.connect(_switch_to_app)
 	right_group.add_child(btn)
@@ -383,8 +439,6 @@ func _nav_button(text: String) -> Button:
 
 func _build_hero() -> void:
 	_clear_children(hero_panel)
-	# Do not paint the wallpaper on the scrolling Hero panel itself.
-	# The fixed TextureRect behind the ScrollContainer supplies the Hero background.
 	var transparent_hero_style := StyleBoxFlat.new()
 	transparent_hero_style.bg_color = Color(0, 0, 0, 0)
 	transparent_hero_style.border_width_left = 0
@@ -407,14 +461,12 @@ func _build_hero() -> void:
 	content.add_theme_constant_override("separation", 62)
 	margin.add_child(content)
 
-	# LEFT: copy and controls
 	var left := VBoxContainer.new()
 	left.custom_minimum_size = Vector2(565, 0)
 	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	left.size_flags_stretch_ratio = 0.88
 	left.add_theme_constant_override("separation", 21)
 	content.add_child(left)
-
 
 	var title_group := VBoxContainer.new()
 	title_group.add_theme_constant_override("separation", -9)
@@ -460,8 +512,6 @@ Structural Design"
 	learn_more_btn.pressed.connect(func(): _scroll_to_node(how_panel))
 	buttons.add_child(learn_more_btn)
 
-
-	# RIGHT: app preview, matching the large rounded reference card.
 	var right := PanelContainer.new()
 	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	right.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -481,8 +531,6 @@ Structural Design"
 
 func _build_features() -> void:
 	_clear_children(features_panel)
-	# Keep this section transparent so the same fixed landing-page wallpaper
-	# remains visible while the user scrolls through Powerful Features.
 	var transparent_features_style := StyleBoxFlat.new()
 	transparent_features_style.bg_color = Color(0, 0, 0, 0)
 	transparent_features_style.border_width_left = 0
@@ -535,8 +583,6 @@ thresholds.", tex_design],
 	for spec in specs:
 		grid.add_child(_numbered_feature_card(spec[0], spec[1], spec[2], spec[3]))
 
-	# Compact proof strip below the feature cards. Give it an explicit width so
-	# the HBox never collapses into a narrow column on wide/HiDPI layouts.
 	var proof_center := CenterContainer.new()
 	proof_center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	content.add_child(proof_center)
@@ -560,8 +606,6 @@ thresholds.", tex_design],
 
 func _build_how_it_works() -> void:
 	_clear_children(how_panel)
-	# Keep this section transparent so the fixed wallpaper also stays visible
-	# behind How ProGen Works.
 	var transparent_how_style := StyleBoxFlat.new()
 	transparent_how_style.bg_color = Color(0, 0, 0, 0)
 	transparent_how_style.border_width_left = 0
@@ -584,9 +628,6 @@ func _build_how_it_works() -> void:
 	content.add_theme_constant_override("separation", 40)
 	margin.add_child(content)
 
-	# Use one RichTextLabel for the title instead of four expanding Labels.
-	# The old HBox allowed each label to expand, which could squeeze every word
-	# into a few pixels and make the title render vertically.
 	var title_box := VBoxContainer.new()
 	title_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title_box.add_theme_constant_override("separation", 8)
@@ -715,13 +756,11 @@ func _build_footer() -> void:
 	content.add_child(_center_label("© 2026 ProGen. All rights reserved. GENERATE • OPTIMIZE • BUILD", font_inter, 14, COLOR_LINK))
 
 func _build_app_view() -> void:
-	# Polished reference-style dashboard.
 	var app_root := VBoxContainer.new()
 	app_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	app_root.add_theme_constant_override("separation", 0)
 	app_view_container.add_child(app_root)
 
-	# Header
 	var app_nav := PanelContainer.new()
 	app_nav.custom_minimum_size = Vector2(0, 104)
 	var nav_style := _style_box(COLOR_WHITE, Color("#edf2f8"), 1, 0, 0)
@@ -745,60 +784,16 @@ func _build_app_view() -> void:
 	logo.texture = tex_logo
 	logo.custom_minimum_size = Vector2(300, 82)
 	logo.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	# KEEP_ASPECT (rather than CENTERED) keeps the actual logo artwork against
-	# the left side of its header slot instead of floating in the middle.
 	logo.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT
 	logo.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	logo.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	nav_row.add_child(logo)
 
-
 	var nav_spacer := Control.new()
 	nav_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	nav_row.add_child(nav_spacer)
 
-	# Whole-UI zoom controls beside Back to Home.
-	var ui_zoom_group := HBoxContainer.new()
-	ui_zoom_group.add_theme_constant_override("separation", 4)
-	ui_zoom_group.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	nav_row.add_child(ui_zoom_group)
-
-	var ui_zoom_out := Button.new()
-	ui_zoom_out.text = "−"
-	ui_zoom_out.tooltip_text = "Zoom interface out"
-	ui_zoom_out.custom_minimum_size = Vector2(34, 34)
-	ui_zoom_out.focus_mode = Control.FOCUS_NONE
-	ui_zoom_out.add_theme_font_override("font", font_poppins_bold)
-	ui_zoom_out.add_theme_font_size_override("font_size", 17)
-	ui_zoom_out.add_theme_color_override("font_color", COLOR_BLUE)
-	ui_zoom_out.add_theme_stylebox_override("normal", _style_box(Color("#ffffff"), Color("#d6e4f6"), 1, 8, 4))
-	ui_zoom_out.add_theme_stylebox_override("hover", _style_box(Color("#eef5ff"), COLOR_BLUE, 1, 8, 4))
-	ui_zoom_out.pressed.connect(func(): _change_ui_zoom(-10))
-	ui_zoom_group.add_child(ui_zoom_out)
-
-	ui_zoom_label = Label.new()
-	ui_zoom_label.text = "100%"
-	ui_zoom_label.custom_minimum_size = Vector2(58, 34)
-	ui_zoom_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	ui_zoom_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	ui_zoom_label.add_theme_font_override("font", font_poppins_bold)
-	ui_zoom_label.add_theme_font_size_override("font_size", 12)
-	ui_zoom_label.add_theme_color_override("font_color", COLOR_NAVY)
-	ui_zoom_label.add_theme_stylebox_override("normal", _style_box(Color("#ffffff"), Color("#d6e4f6"), 1, 8, 4))
-	ui_zoom_group.add_child(ui_zoom_label)
-
-	var ui_zoom_in := Button.new()
-	ui_zoom_in.text = "+"
-	ui_zoom_in.tooltip_text = "Zoom interface in"
-	ui_zoom_in.custom_minimum_size = Vector2(34, 34)
-	ui_zoom_in.focus_mode = Control.FOCUS_NONE
-	ui_zoom_in.add_theme_font_override("font", font_poppins_bold)
-	ui_zoom_in.add_theme_font_size_override("font_size", 17)
-	ui_zoom_in.add_theme_color_override("font_color", COLOR_BLUE)
-	ui_zoom_in.add_theme_stylebox_override("normal", _style_box(Color("#ffffff"), Color("#d6e4f6"), 1, 8, 4))
-	ui_zoom_in.add_theme_stylebox_override("hover", _style_box(Color("#eef5ff"), COLOR_BLUE, 1, 8, 4))
-	ui_zoom_in.pressed.connect(func(): _change_ui_zoom(10))
-	ui_zoom_group.add_child(ui_zoom_in)
+	nav_row.add_child(_build_zoom_controls())
 
 	var back_btn := Button.new()
 	back_btn.text = "←  Back to Home"
@@ -816,7 +811,6 @@ func _build_app_view() -> void:
 	back_btn.pressed.connect(_switch_to_landing)
 	nav_row.add_child(back_btn)
 
-	# Main body
 	var body_panel := PanelContainer.new()
 	body_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	body_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -844,7 +838,6 @@ func _build_app_view() -> void:
 	main_hbox.add_theme_constant_override("separation", 12)
 	workspace_vbox.add_child(main_hbox)
 
-	# LEFT CARD — Structural inputs
 	var left_card := PanelContainer.new()
 	left_card.custom_minimum_size = Vector2(310, 0)
 	left_card.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -865,7 +858,6 @@ func _build_app_view() -> void:
 	left_vbox.add_theme_constant_override("separation", 9)
 	left_scroll.add_child(left_vbox)
 
-	# Initial state: show only the structural generation form.
 	structural_controls = VBoxContainer.new()
 	structural_controls.add_theme_constant_override("separation", 9)
 	left_vbox.add_child(structural_controls)
@@ -885,6 +877,7 @@ func _build_app_view() -> void:
 	story_height_input = _app_input_field(structural_controls, "Story Height, m (3–5)", "3.5")
 
 	var generate_btn := Button.new()
+	generate_button = generate_btn
 	generate_btn.text = "⚙   Generate Structure   →"
 	generate_btn.custom_minimum_size = Vector2(0, 56)
 	generate_btn.focus_mode = Control.FOCUS_NONE
@@ -900,9 +893,6 @@ func _build_app_view() -> void:
 	generate_btn.pressed.connect(_on_generate_pressed)
 	structural_controls.add_child(generate_btn)
 
-	# After successful generation this replaces the editable structural form.
-	# It shows the generated structural values as a read-only summary together
-	# with the seismic inputs that the user can configure.
 	simulation_controls = VBoxContainer.new()
 	simulation_controls.add_theme_constant_override("separation", 10)
 	simulation_controls.visible = false
@@ -940,9 +930,15 @@ func _build_app_view() -> void:
 	sim_help.add_theme_font_size_override("font_size", 12)
 	sim_help.add_theme_color_override("font_color", COLOR_MUTED)
 	simulation_controls.add_child(sim_help)
+	seismic_help_label = sim_help
 
 	magnitude_input = _app_input_field(simulation_controls, "Magnitude (1–10)", "5")
 	duration_input = _app_input_field(simulation_controls, "Duration, sec (10–30)", "15")
+
+	seismic_summary_box = VBoxContainer.new()
+	seismic_summary_box.add_theme_constant_override("separation", 5)
+	seismic_summary_box.visible = false
+	simulation_controls.add_child(seismic_summary_box)
 
 	run_simulation_button = Button.new()
 	run_simulation_button.text = "▶   Run Simulation"
@@ -957,18 +953,14 @@ func _build_app_view() -> void:
 	run_simulation_button.pressed.connect(_on_simulate_pressed)
 	simulation_controls.add_child(run_simulation_button)
 
-	var seismic_reset_btn := Button.new()
-	seismic_reset_btn.text = "↻   Reset Structure"
-	seismic_reset_btn.custom_minimum_size = Vector2(0, 48)
-	seismic_reset_btn.focus_mode = Control.FOCUS_NONE
-	seismic_reset_btn.add_theme_font_override("font", font_poppins_bold)
-	seismic_reset_btn.add_theme_font_size_override("font_size", 14)
-	seismic_reset_btn.add_theme_color_override("font_color", COLOR_BLUE)
-	seismic_reset_btn.add_theme_stylebox_override("normal", _style_box(Color("#ffffff"), Color("#1267f4"), 1, 9, 12))
-	seismic_reset_btn.add_theme_stylebox_override("hover", _style_box(Color("#f5f9ff"), Color("#1267f4"), 1, 9, 12))
-	seismic_reset_btn.add_theme_stylebox_override("pressed", _style_box(Color("#edf4ff"), Color("#1267f4"), 1, 9, 12))
-	seismic_reset_btn.pressed.connect(_on_reset_pressed)
-	simulation_controls.add_child(seismic_reset_btn)
+	reset_button = Button.new()
+	reset_button.custom_minimum_size = Vector2(0, 48)
+	reset_button.focus_mode = Control.FOCUS_NONE
+	reset_button.add_theme_font_override("font", font_poppins_bold)
+	reset_button.add_theme_font_size_override("font_size", 14)
+	reset_button.pressed.connect(_on_reset_or_cancel_pressed)
+	simulation_controls.add_child(reset_button)
+	_set_cancel_mode(false)
 
 	rule_preview_dropdown = OptionButton.new()
 	rule_preview_dropdown.custom_minimum_size = Vector2(0, 40)
@@ -981,7 +973,6 @@ func _build_app_view() -> void:
 	rule_preview_dropdown.item_selected.connect(_on_rule_preview_selected)
 	left_vbox.add_child(rule_preview_dropdown)
 
-	# CENTER — 3D workspace
 	var viewport_panel := PanelContainer.new()
 	viewport_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	viewport_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -1035,8 +1026,52 @@ func _build_app_view() -> void:
 	ctrl_desc.add_theme_color_override("font_color", Color("#3d5270"))
 	ctrl_vbox.add_child(ctrl_desc)
 
+	var view_panel := PanelContainer.new()
+	var view_style := _style_box(Color(1, 1, 1, 0.92), Color("#e0e9f4"), 1, 10, 10)
+	view_style.shadow_color = Color(0.04, 0.16, 0.34, 0.05)
+	view_style.shadow_size = 6
+	view_panel.add_theme_stylebox_override("panel", view_style)
+	view_panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	view_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	view_panel.offset_left = -150
+	view_panel.offset_right = -14
+	view_panel.offset_top = 14
+	vp_stack.add_child(view_panel)
 
-	# RIGHT COLUMN
+	var view_vbox := VBoxContainer.new()
+	view_vbox.add_theme_constant_override("separation", 6)
+	view_panel.add_child(view_vbox)
+
+	view_cube = ViewCube.new()
+	view_cube.custom_minimum_size = Vector2(116, 116)
+	view_cube.camera = structure_camera
+	view_cube.label_font = font_poppins_bold
+	view_cube.tooltip_text = "Click a face to view the structure from that axis direction"
+	view_cube.face_pressed.connect(_on_view_cube_face_pressed)
+	view_vbox.add_child(view_cube)
+
+	var iso_btn := _view_button("Isometric", "Isometric view (equal angles to X, Y and Z)")
+	iso_btn.pressed.connect(_on_isometric_view_pressed)
+	view_vbox.add_child(iso_btn)
+
+	var reset_view_btn := _view_button("Reset View", "Back to the default angled view")
+	reset_view_btn.pressed.connect(_on_reset_view_pressed)
+	view_vbox.add_child(reset_view_btn)
+
+	highlights_button = _view_button("      Colors", "Show or hide the feedback colors (red changes, orange braces, purple struts)")
+	highlights_button.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	highlights_button.pressed.connect(func(): _set_highlights(not highlights_visible))
+	view_vbox.add_child(highlights_button)
+	highlights_icon = Control.new()
+	highlights_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	highlights_icon.set_anchors_and_offsets_preset(Control.PRESET_CENTER_LEFT)
+	highlights_icon.offset_left = 22
+	highlights_icon.offset_right = 44
+	highlights_icon.offset_top = -9
+	highlights_icon.offset_bottom = 9
+	highlights_icon.draw.connect(_draw_highlights_icon)
+	highlights_button.add_child(highlights_icon)
+
 	var right_col := VBoxContainer.new()
 	right_col.custom_minimum_size = Vector2(340, 0)
 	right_col.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -1066,7 +1101,7 @@ func _build_app_view() -> void:
 	preview_box.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	var prev_style := _style_box(Color("#eaf6ff"), Color("#d8eafa"), 1, 10, 0)
 	preview_box.add_theme_stylebox_override("panel", prev_style)
-	_build_preview_3d(preview_box)
+	_build_preview_gif(preview_box)
 	preview_vbox.add_child(preview_box)
 
 	var iteration_card := PanelContainer.new()
@@ -1110,7 +1145,6 @@ func _build_app_view() -> void:
 	iteration_list.add_theme_constant_override("separation", 6)
 	iteration_scroll.add_child(iteration_list)
 
-	# Clear Previous Runs button
 	clean_runs_button = Button.new()
 	clean_runs_button.text = "⌫   Clear Previous Runs"
 	clean_runs_button.custom_minimum_size = Vector2(0, 42)
@@ -1142,7 +1176,24 @@ func _build_app_view() -> void:
 	clean_runs_dialog.confirmed.connect(_on_clean_runs_confirmed)
 	app_view_container.add_child(clean_runs_dialog)
 
-	# Bottom terminal panel
+	pdf_dialog = FileDialog.new()
+	pdf_dialog.title = "Save Iteration Report as PDF"
+	pdf_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
+	pdf_dialog.access = FileDialog.ACCESS_FILESYSTEM
+	pdf_dialog.use_native_dialog = true
+	pdf_dialog.filters = PackedStringArray(["*.pdf ; PDF document"])
+	pdf_dialog.file_selected.connect(_on_pdf_path_selected)
+	app_view_container.add_child(pdf_dialog)
+
+	gif_dialog = FileDialog.new()
+	gif_dialog.title = "Save Simulation GIF"
+	gif_dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
+	gif_dialog.access = FileDialog.ACCESS_FILESYSTEM
+	gif_dialog.use_native_dialog = true
+	gif_dialog.filters = PackedStringArray(["*.gif ; GIF animation"])
+	gif_dialog.file_selected.connect(_on_gif_path_selected)
+	app_view_container.add_child(gif_dialog)
+
 	terminal_panel = PanelContainer.new()
 	terminal_panel.custom_minimum_size = Vector2(0, 160)
 	terminal_panel.size_flags_vertical = Control.SIZE_FILL
@@ -1155,7 +1206,6 @@ func _build_app_view() -> void:
 	terminal_outer.add_theme_constant_override("separation", 5)
 	terminal_panel.add_child(terminal_outer)
 
-	# Drag handle: drag upward to maximize, downward to minimize.
 	var terminal_drag_handle := Control.new()
 	terminal_drag_handle.custom_minimum_size = Vector2(0, 12)
 	terminal_drag_handle.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1253,7 +1303,6 @@ func _app_input_field(parent: Control, label_text: String, default_value: String
 	line_edit.focus_mode = Control.FOCUS_ALL
 	line_edit.editable = true
 	line_edit.custom_minimum_size = Vector2(0, 40)
-	# Keep the insertion caret clearly visible against the white input background.
 	line_edit.add_theme_color_override("caret_color", Color("#155dfc"))
 	line_edit.add_theme_color_override("selection_color", Color("#cfe0ff"))
 	line_edit.add_theme_font_override("font", font_inter)
@@ -1285,8 +1334,8 @@ func _build_viewport_3d(parent: Control) -> void:
 	structure_camera.far = 500.0
 	sub_viewport.add_child(structure_camera)
 	structure_camera.current = true
-	structure_camera.position = Vector3(20, 16, 24)
-	structure_camera.look_at(Vector3(10, 6, 10), Vector3.UP)
+	structure_camera.position = DEFAULT_CAMERA_POSITION
+	structure_camera.look_at(DEFAULT_CAMERA_TARGET, Vector3.UP)
 	structure_camera.sync_look_from_rotation()
 
 	structure_display = StaticStructureView.new()
@@ -1304,9 +1353,6 @@ func _build_viewport_3d(parent: Control) -> void:
 	shake_label.visible = false
 	parent.add_child(shake_label)
 
-
-
-	# Loading overlay shown during the intentional 2-second generation step.
 	generation_loading_overlay = PanelContainer.new()
 	generation_loading_overlay.set_anchors_preset(Control.PRESET_CENTER)
 	generation_loading_overlay.offset_left = -112
@@ -1366,26 +1412,19 @@ func _add_scene_lighting(sub_viewport: SubViewport, background: Color) -> void:
 	light.light_energy = 1.1
 	sub_viewport.add_child(light)
 
-func _build_preview_3d(parent: Control) -> void:
-	var svc := SubViewportContainer.new()
-	svc.stretch = true
-	svc.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-	svc.gui_input.connect(_on_preview_input)
-	parent.add_child(svc)
+func _build_preview_gif(parent: Control) -> void:
+	var area := Control.new()
+	area.clip_contents = true
+	area.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	area.gui_input.connect(_on_preview_input)
+	parent.add_child(area)
 
-	var sub_viewport := SubViewport.new()
-	sub_viewport.own_world_3d = true
-	sub_viewport.handle_input_locally = false
-	svc.add_child(sub_viewport)
-	_add_scene_lighting(sub_viewport, Color("#e0f2fe"))
-
-	preview_camera = Camera3D.new()
-	preview_camera.far = 500.0
-	sub_viewport.add_child(preview_camera)
-	preview_camera.current = true
-
-	preview_view = StaticStructureView.new()
-	sub_viewport.add_child(preview_view)
+	preview_image = TextureRect.new()
+	preview_image.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	preview_image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	preview_image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	preview_image.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	area.add_child(preview_image)
 
 	preview_hint = Label.new()
 	preview_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1398,6 +1437,29 @@ func _build_preview_3d(parent: Control) -> void:
 	preview_hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	preview_hint.text = "Select an iteration to preview its seismic performance"
 	parent.add_child(preview_hint)
+
+	gif_download_button = Button.new()
+	gif_download_button.text = "⬇"
+	gif_download_button.tooltip_text = "Download this iteration's Simulation GIF"
+	gif_download_button.focus_mode = Control.FOCUS_NONE
+	gif_download_button.disabled = true
+	gif_download_button.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	gif_download_button.offset_left = -46
+	gif_download_button.offset_right = -6
+	gif_download_button.offset_top = 6
+	gif_download_button.offset_bottom = 42
+	gif_download_button.add_theme_font_override("font", font_poppins_bold)
+	gif_download_button.add_theme_font_size_override("font_size", 20)
+	gif_download_button.add_theme_color_override("font_color", Color(0.027, 0.333, 0.914, 0.85))
+	gif_download_button.add_theme_color_override("font_hover_color", Color("#003fc4"))
+	gif_download_button.add_theme_color_override("font_pressed_color", Color("#00349f"))
+	gif_download_button.add_theme_color_override("font_disabled_color", Color(0.027, 0.333, 0.914, 0.25))
+	gif_download_button.add_theme_stylebox_override("normal", _style_box(Color(1, 1, 1, 0.45), Color(0.545, 0.71, 1.0, 0.6), 1, 8, 4))
+	gif_download_button.add_theme_stylebox_override("hover", _style_box(Color(0.92, 0.95, 1.0, 0.8), Color("#0755e9"), 1, 8, 4))
+	gif_download_button.add_theme_stylebox_override("pressed", _style_box(Color(0.85, 0.91, 1.0, 0.9), Color("#003fc4"), 1, 8, 4))
+	gif_download_button.add_theme_stylebox_override("disabled", _style_box(Color(1, 1, 1, 0.25), Color(0.545, 0.71, 1.0, 0.25), 1, 8, 4))
+	gif_download_button.pressed.connect(_on_gif_download_pressed)
+	area.add_child(gif_download_button)
 
 func _validate_inputs(include_simulation: bool = true) -> Dictionary:
 	var errors: Array[String] = []
@@ -1444,7 +1506,6 @@ func _validate_inputs(include_simulation: bool = true) -> Dictionary:
 			errors.append("Duration must be between 10 and 30 secs (got %s)" % duration_input.text)
 		params["duration"] = duration
 
-
 	return {"ok": errors.is_empty(), "params": params, "errors": errors}
 
 func _log_terminal(text: String) -> void:
@@ -1459,7 +1520,6 @@ func _log_terminal(text: String) -> void:
 	var lower := text.to_lower()
 	var status := "success"
 
-	# Explicit semantic ordering prevents FAIL messages from receiving success icons.
 	if text.begins_with("ERROR:") or lower.contains("fail") or lower.contains("failed"):
 		status = "error"
 		display_text = display_text.trim_prefix("ERROR:").strip_edges()
@@ -1516,7 +1576,6 @@ func _log_terminal(text: String) -> void:
 	term_vbox.add_child(row)
 	_scroll_terminal_to_bottom()
 
-
 func _scroll_terminal_to_bottom() -> void:
 	if term_scroll == null:
 		return
@@ -1530,7 +1589,6 @@ func _reset_terminal() -> void:
 	_log_terminal("ProGen terminal ready")
 	_log_terminal("Enter structural parameters, then generate a structure.")
 
-
 func _on_terminal_drag_handle_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
@@ -1540,20 +1598,16 @@ func _on_terminal_drag_handle_input(event: InputEvent) -> void:
 		else:
 			terminal_drag_active = false
 	elif event is InputEventMouseMotion and terminal_drag_active:
-		# event.global_position is in viewport pixels, while the dashboard is
-		# laid out in pre-scale logical pixels. Convert before resizing.
 		var zoom_factor: float = maxf(0.01, float(ui_zoom_percent) / 100.0)
 		var delta_y: float = (event.global_position.y - terminal_drag_start_mouse_y) / zoom_factor
 		var new_height: float = terminal_drag_start_height - delta_y
 		var logical_viewport_height: float = float(get_viewport_rect().size.y) / zoom_factor
 		var max_height: float = maxf(220.0, logical_viewport_height - 220.0)
-		# 62 px keeps the drag handle + Terminal header visible when minimized.
 		terminal_panel.custom_minimum_size.y = clampf(new_height, 62.0, max_height)
 
-func _add_structural_summary_row(label_text: String, value_text: String) -> void:
-	if structural_summary_box == null:
+func _add_summary_row(box: VBoxContainer, label_text: String, value_text: String) -> void:
+	if box == null:
 		return
-
 	var row := HBoxContainer.new()
 	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_theme_constant_override("separation", 8)
@@ -1574,21 +1628,36 @@ func _add_structural_summary_row(label_text: String, value_text: String) -> void
 	value_label.add_theme_color_override("font_color", COLOR_TEXT)
 	row.add_child(value_label)
 
-	structural_summary_box.add_child(row)
+	box.add_child(row)
 
 func _refresh_structural_summary(params: Dictionary) -> void:
 	if structural_summary_box == null:
 		return
 	_clear_children(structural_summary_box)
+	_add_summary_row(structural_summary_box, "Bay X", str(params.get("bay_count_x", "-")))
+	_add_summary_row(structural_summary_box, "Bay Y", str(params.get("bay_count_y", "-")))
+	_add_summary_row(structural_summary_box, "Bay Width X", "%.2f m" % float(params.get("bay_width_x", 0.0)))
+	_add_summary_row(structural_summary_box, "Bay Width Y", "%.2f m" % float(params.get("bay_width_y", 0.0)))
+	_add_summary_row(structural_summary_box, "Floor Count", str(params.get("floor_count", "-")))
+	_add_summary_row(structural_summary_box, "Story Height", "%.2f m" % float(params.get("story_height", 0.0)))
 
-	_add_structural_summary_row("Bay X", str(params.get("bay_count_x", "-")))
-	_add_structural_summary_row("Bay Y", str(params.get("bay_count_y", "-")))
-	_add_structural_summary_row("Bay Width X", "%.2f m" % float(params.get("bay_width_x", 0.0)))
-	_add_structural_summary_row("Bay Width Y", "%.2f m" % float(params.get("bay_width_y", 0.0)))
-	_add_structural_summary_row("Floor Count", str(params.get("floor_count", "-")))
-	_add_structural_summary_row("Story Height", "%.2f m" % float(params.get("story_height", 0.0)))
+func _refresh_seismic_summary() -> void:
+	if seismic_summary_box == null:
+		return
+	_clear_children(seismic_summary_box)
+	_add_summary_row(seismic_summary_box, "Magnitude", "%.1f" % float(magnitude_input.text))
+	_add_summary_row(seismic_summary_box, "Duration", "%.1f s" % float(duration_input.text))
+
+func _set_structural_summary_visible(show: bool) -> void:
+	if show:
+		_refresh_structural_summary(current_params)
+	for node in [structural_summary_title, structural_summary_box, structural_summary_divider]:
+		if node != null:
+			node.visible = show
 
 func _on_generate_pressed() -> void:
+	if generating:
+		return
 	var validation := _validate_inputs(false)
 	if not validation["ok"]:
 		for e in validation["errors"]:
@@ -1610,26 +1679,24 @@ func _on_generate_pressed() -> void:
 		_show_toast("Structure validation failed.", "error")
 		return
 
+	generating = true
+	if generate_button:
+		generate_button.disabled = true
 	_show_toast("Generating structure...", "info")
 	_log_terminal("INITIALIZING: generating structure")
 	if generation_loading_overlay:
 		generation_loading_overlay.visible = true
 	vp_label.visible = false
 
-	# Intentional 2-second generation/loading state requested for the UI.
-	await get_tree().create_timer(2.0).timeout
+	await get_tree().create_timer(1.0).timeout
 
+	generating = false
+	if generate_button:
+		generate_button.disabled = false
 	current_params = params
 	current_topo = topo
 	has_structure = true
-
-	# After Generate, show only Your Seismic Inputs.
-	if structural_summary_title:
-		structural_summary_title.visible = false
-	if structural_summary_box:
-		structural_summary_box.visible = false
-	if structural_summary_divider:
-		structural_summary_divider.visible = false
+	_set_structural_summary_visible(false)
 	if structural_controls:
 		structural_controls.visible = false
 	if simulation_controls:
@@ -1637,6 +1704,7 @@ func _on_generate_pressed() -> void:
 	_stop_live_shake()
 	_clear_preview()
 	structure_display.build(topo)
+	_set_highlights(true)
 	_frame_camera_on_structure(params)
 	rule_preview_dropdown.select(0)
 	rule_preview_dropdown.visible = true
@@ -1654,95 +1722,82 @@ func _on_generate_pressed() -> void:
 		_log_terminal("WARNING: %s" % w)
 	_show_toast("Structure generated successfully.", "success")
 
-func _frame_camera_on_structure(params: Dictionary) -> void:
-	if structure_camera == null:
-		return
-	var width_x: float = params["bay_count_x"] * params["bay_width_x"]
-	var width_z: float = params["bay_count_y"] * params["bay_width_y"]
-	var height_y: float = params["floor_count"] * params["story_height"]
-	var extents := Vector3(width_x, height_y, width_z)
-	var center := extents / 2.0
-	structure_zoom_target = center
-	_reset_structure_zoom()
+func _build_zoom_controls() -> HBoxContainer:
+	var group := HBoxContainer.new()
+	group.add_theme_constant_override("separation", 4)
+	group.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 
-	var bounding_radius := extents.length() / 2.0
-	var half_fov_rad := deg_to_rad(structure_camera.fov) / 2.0
-	var distance: float = max(bounding_radius / sin(half_fov_rad) * 1.35, 6.0)
+	var zoom_out := Button.new()
+	zoom_out.text = "−"
+	zoom_out.tooltip_text = "Zoom interface out (Ctrl -)"
+	zoom_out.custom_minimum_size = Vector2(34, 34)
+	zoom_out.focus_mode = Control.FOCUS_NONE
+	zoom_out.add_theme_font_override("font", font_poppins_bold)
+	zoom_out.add_theme_font_size_override("font_size", 17)
+	zoom_out.add_theme_color_override("font_color", COLOR_BLUE)
+	zoom_out.add_theme_stylebox_override("normal", _style_box(Color("#ffffff"), Color("#d6e4f6"), 1, 8, 4))
+	zoom_out.add_theme_stylebox_override("hover", _style_box(Color("#eef5ff"), COLOR_BLUE, 1, 8, 4))
+	zoom_out.pressed.connect(func(): _change_ui_zoom(-10))
+	group.add_child(zoom_out)
 
-	var direction := Vector3(1.0, 0.7, 1.0).normalized()
-	structure_camera.global_position = center + direction * distance
-	structure_camera.look_at(center, Vector3.UP)
-	structure_camera.sync_look_from_rotation()
+	var zoom_label := Label.new()
+	zoom_label.text = "%d%%" % ui_zoom_percent
+	zoom_label.custom_minimum_size = Vector2(58, 34)
+	zoom_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	zoom_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	zoom_label.add_theme_font_override("font", font_poppins_bold)
+	zoom_label.add_theme_font_size_override("font_size", 12)
+	zoom_label.add_theme_color_override("font_color", COLOR_NAVY)
+	zoom_label.add_theme_stylebox_override("normal", _style_box(Color("#ffffff"), Color("#d6e4f6"), 1, 8, 4))
+	group.add_child(zoom_label)
+	ui_zoom_labels.append(zoom_label)
+
+	var zoom_in := Button.new()
+	zoom_in.text = "+"
+	zoom_in.tooltip_text = "Zoom interface in (Ctrl +)"
+	zoom_in.custom_minimum_size = Vector2(34, 34)
+	zoom_in.focus_mode = Control.FOCUS_NONE
+	zoom_in.add_theme_font_override("font", font_poppins_bold)
+	zoom_in.add_theme_font_size_override("font_size", 17)
+	zoom_in.add_theme_color_override("font_color", COLOR_BLUE)
+	zoom_in.add_theme_stylebox_override("normal", _style_box(Color("#ffffff"), Color("#d6e4f6"), 1, 8, 4))
+	zoom_in.add_theme_stylebox_override("hover", _style_box(Color("#eef5ff"), COLOR_BLUE, 1, 8, 4))
+	zoom_in.pressed.connect(func(): _change_ui_zoom(10))
+	group.add_child(zoom_in)
+	return group
 
 func _change_ui_zoom(delta_percent: int) -> void:
 	_set_ui_zoom(ui_zoom_percent + delta_percent)
 
 func _set_ui_zoom(percent: int) -> void:
 	ui_zoom_percent = clampi(percent, 70, 130)
-	if ui_zoom_label:
-		ui_zoom_label.text = "%d%%" % ui_zoom_percent
-
-	# Scale only the dashboard instead of changing the Window content scale.
-	# This preserves correct mouse-wheel scrolling and drag coordinates.
+	for zoom_label in ui_zoom_labels:
+		zoom_label.text = "%d%%" % ui_zoom_percent
 	var window := get_window()
 	if window:
 		window.content_scale_factor = 1.0
-
 	_apply_ui_zoom_layout()
 	_show_toast("Interface zoom: %d%%" % ui_zoom_percent, "info")
 
 func _apply_ui_zoom_layout() -> void:
 	if app_view_container == null:
 		return
-
 	var factor: float = maxf(0.01, float(ui_zoom_percent) / 100.0)
 	var viewport_size := get_viewport_rect().size
-
-	# Give the dashboard an inverse logical size, then visually scale it.
-	# Result: browser-like UI zoom while Control input transforms remain valid.
-	app_view_container.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	app_view_container.position = Vector2.ZERO
-	app_view_container.scale = Vector2(factor, factor)
-	app_view_container.size = viewport_size / factor
-
-func _zoom_structure(delta_percent: int) -> void:
-	if structure_camera == null or not has_structure:
-		return
-
-	var new_percent: int = clampi(structure_zoom_percent + delta_percent, 40, 200)
-	if new_percent == structure_zoom_percent:
-		return
-
-	# Higher percent = camera moves closer to the structure target.
-	var old_scale := 100.0 / float(structure_zoom_percent)
-	var new_scale := 100.0 / float(new_percent)
-	var direction := structure_camera.global_position - structure_zoom_target
-	if direction.length() < 0.001:
-		return
-	var base_vector := direction / old_scale
-	structure_camera.global_position = structure_zoom_target + base_vector * new_scale
-	structure_camera.look_at(structure_zoom_target, Vector3.UP)
-	structure_camera.sync_look_from_rotation()
-
-	structure_zoom_percent = new_percent
-	if structure_zoom_label:
-		structure_zoom_label.text = "%d%%" % structure_zoom_percent
-
-func _reset_structure_zoom() -> void:
-	structure_zoom_percent = 100
-	if structure_zoom_label:
-		structure_zoom_label.text = "100%"
+	for page in [app_view_container, website]:
+		page.set_anchors_preset(Control.PRESET_TOP_LEFT)
+		page.position = Vector2.ZERO
+		page.scale = Vector2(factor, factor)
+		page.size = viewport_size / factor
 
 func _show_toast(message: String, kind: String = "success") -> void:
 	if app_view_container == null:
 		return
 
 	var toast := PanelContainer.new()
-	toast.z_index = 5000
+	toast.z_index = 100
 	toast.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	toast.modulate.a = 0.0
-
-	# Center the notification horizontally near the top-middle of the dashboard.
 	toast.set_anchors_preset(Control.PRESET_CENTER_TOP)
 	toast.offset_left = -230
 	toast.offset_top = 28
@@ -1801,6 +1856,99 @@ func _show_toast(message: String, kind: String = "success") -> void:
 	tween.tween_property(toast, "modulate:a", 0.0, 0.28)
 	tween.tween_callback(toast.queue_free)
 
+func _frame_camera_on_structure(params: Dictionary) -> void:
+	if structure_camera == null:
+		return
+	if camera_tween != null and camera_tween.is_valid():
+		camera_tween.kill()
+	var frame := _structure_view_frame(params)
+	var center: Vector3 = frame["center"]
+	var direction := Vector3(1.0, 0.7, 1.0).normalized()
+	structure_camera.global_position = center + direction * float(frame["distance"])
+	structure_camera.look_at(center, Vector3.UP)
+	structure_camera.sync_look_from_rotation()
+
+func _structure_view_frame(params: Dictionary) -> Dictionary:
+	var width_x: float = params["bay_count_x"] * params["bay_width_x"]
+	var width_z: float = params["bay_count_y"] * params["bay_width_y"]
+	var height_y: float = params["floor_count"] * params["story_height"]
+	var extents := Vector3(width_x, height_y, width_z)
+	var bounding_radius := extents.length() / 2.0
+	var half_fov_rad := deg_to_rad(structure_camera.fov) / 2.0
+	var distance: float = max(bounding_radius / sin(half_fov_rad) * 1.35, 6.0)
+	return {"center": extents / 2.0, "distance": distance}
+
+func _current_view_frame() -> Dictionary:
+	if has_structure and not current_params.is_empty():
+		return _structure_view_frame(current_params)
+	return {"center": DEFAULT_CAMERA_TARGET, "distance": (DEFAULT_CAMERA_POSITION - DEFAULT_CAMERA_TARGET).length()}
+
+func _view_button(text: String, tooltip: String) -> Button:
+	var button := Button.new()
+	button.text = text
+	button.tooltip_text = tooltip
+	button.custom_minimum_size = Vector2(0, 30)
+	button.focus_mode = Control.FOCUS_NONE
+	button.add_theme_font_override("font", font_inter)
+	button.add_theme_font_size_override("font_size", 12)
+	button.add_theme_color_override("font_color", COLOR_BLUE)
+	button.add_theme_color_override("font_hover_color", COLOR_BLUE)
+	button.add_theme_color_override("font_pressed_color", COLOR_BLUE)
+	button.add_theme_stylebox_override("normal", _style_box(Color("#f8fbff"), Color("#cfe0ff"), 1, 7, 4))
+	button.add_theme_stylebox_override("hover", _style_box(Color("#eef5ff"), COLOR_BLUE, 1, 7, 4))
+	button.add_theme_stylebox_override("pressed", _style_box(Color("#e5efff"), COLOR_BLUE, 1, 7, 4))
+	return button
+
+func _camera_forward(yaw: float, pitch: float) -> Vector3:
+	return Basis.from_euler(Vector3(pitch, yaw, 0.0)) * Vector3.FORWARD
+
+func _direction_angles(direction: Vector3) -> Vector2:
+	var d := direction.normalized()
+	return Vector2(atan2(d.x, d.z), -asin(d.y))
+
+func _on_view_cube_face_pressed(normal: Vector3) -> void:
+	if normal.y > 0.5:
+		_animate_camera(0.0, -PI / 2.0)
+	elif normal.y < -0.5:
+		_animate_camera(0.0, PI / 2.0)
+	else:
+		_animate_camera(atan2(normal.x, normal.z), 0.0)
+
+func _on_isometric_view_pressed() -> void:
+	var angles := _direction_angles(Vector3(1.0, 1.0, 1.0))
+	_animate_camera(angles.x, angles.y)
+
+func _on_reset_view_pressed() -> void:
+	var direction := Vector3(1.0, 0.7, 1.0)
+	if not (has_structure and not current_params.is_empty()):
+		direction = DEFAULT_CAMERA_POSITION - DEFAULT_CAMERA_TARGET
+	var angles := _direction_angles(direction)
+	_animate_camera(angles.x, angles.y)
+
+func _animate_camera(target_yaw: float, target_pitch: float) -> void:
+	if structure_camera == null:
+		return
+	if camera_tween != null and camera_tween.is_valid():
+		camera_tween.kill()
+	var frame := _current_view_frame()
+	var center: Vector3 = frame["center"]
+	var target_distance: float = frame["distance"]
+	var start_position := structure_camera.global_position
+	var start_yaw := structure_camera.rotation.y
+	var start_pitch := structure_camera.rotation.x
+	var start_distance: float = max((start_position - center).length(), 0.5)
+	var start_offset := start_position - (center - _camera_forward(start_yaw, start_pitch) * start_distance)
+	var step := func(t: float) -> void:
+		var yaw := lerp_angle(start_yaw, target_yaw, t)
+		var pitch := lerpf(start_pitch, target_pitch, t)
+		var distance := lerpf(start_distance, target_distance, t)
+		structure_camera.rotation = Vector3(pitch, yaw, 0.0)
+		structure_camera.global_position = center - _camera_forward(yaw, pitch) * distance + start_offset * (1.0 - t)
+	camera_tween = create_tween()
+	camera_tween.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
+	camera_tween.tween_method(step, 0.0, 1.0, 0.45)
+	camera_tween.finished.connect(structure_camera.sync_look_from_rotation)
+
 func _on_simulate_pressed() -> void:
 	if not has_structure:
 		_log_terminal("ERROR: generate a structure before running the simulation")
@@ -1812,23 +1960,11 @@ func _on_simulate_pressed() -> void:
 			_log_terminal("ERROR: %s" % e)
 		return
 
-	# When Run Simulation is clicked, reveal the generated structural inputs
-	# above Your Seismic Inputs.
-	_refresh_structural_summary(current_params)
-	if structural_summary_title:
-		structural_summary_title.visible = true
-	if structural_summary_box:
-		structural_summary_box.visible = true
-	if structural_summary_divider:
-		structural_summary_divider.visible = true
-
-	# Once the simulation is launched, hide Run Simulation so the only
-	# action left in this state is Reset Structure.
-	if run_simulation_button:
-		run_simulation_button.visible = false
-
 	if python_simulation_running:
 		_log_terminal("OpenSeesPy NLTHA is already running")
+		return
+	if cancel_delete_dir != "":
+		_log_terminal("still deleting the cancelled run; try again in a moment")
 		return
 
 	var sim_params: Dictionary = current_params.duplicate()
@@ -1857,7 +1993,7 @@ func _on_simulate_pressed() -> void:
 	)
 
 func _runs_root() -> String:
-	return ProjectSettings.globalize_path("res://..").path_join("runs")
+	return _app_root().path_join("runs")
 
 func _create_run_dir() -> String:
 	var stamp := Time.get_datetime_string_from_system().replace("T", "_").replace(":", "-")
@@ -1897,9 +2033,8 @@ func _export_topology_for_python(params: Dictionary, run_dir: String) -> bool:
 	return true
 
 func _start_python_nltha(params: Dictionary, run_dir: String) -> void:
-	var project_root := ProjectSettings.globalize_path("res://..")
-	var python_path := project_root.path_join(".venv-1/Scripts/python.exe")
-	var script_path := project_root.path_join("simulation.py")
+	var python_path := _python_executable()
+	var script_path := _engine_dir().path_join("simulation.py")
 	var topology_path := run_dir.path_join("input.json")
 	var args := PackedStringArray([
 		script_path,
@@ -1913,11 +2048,12 @@ func _start_python_nltha(params: Dictionary, run_dir: String) -> void:
 		_log_terminal("ERROR: could not start Python/OpenSeesPy")
 		return
 	python_simulation_running = true
+	_set_cancel_mode(true)
 	if is_instance_valid(clean_runs_button):
 		clean_runs_button.disabled = true
 	python_simulation_started_ms = Time.get_ticks_msec()
 	python_simulation_last_heartbeat_ms = python_simulation_started_ms
-	_log_terminal("closed-loop run started: Iteration 0, then feedback and re-simulation automatically")
+	_log_terminal("closed-loop run started: Initial Iteration, then feedback and re-simulation automatically")
 	_log_terminal("(larger structures can take a minute or more per iteration -- iterations appear on the right as they finish)")
 	iterations_shown = 0
 	live_iteration = -1
@@ -1956,12 +2092,12 @@ func _poll_run() -> void:
 		var total := int(progress.get("total_steps", 0))
 		var iteration := int(progress.get("iteration", 0))
 		if phase == "simulating" and total > 0:
-			iteration_label.text = "Iteration %d: simulating step %d/%d" % [
-				iteration, int(progress.get("step", 0)), total]
+			iteration_label.text = "%s: simulating step %d/%d" % [
+				_iteration_name(iteration), int(progress.get("step", 0)), total]
 		elif phase == "feedback":
-			iteration_label.text = "Iteration %d: applying feedback rules" % iteration
+			iteration_label.text = "%s: applying feedback rules" % _iteration_name(iteration)
 		else:
-			iteration_label.text = "Iteration %d: %s" % [iteration, phase]
+			iteration_label.text = "%s: %s" % [_iteration_name(iteration), phase]
 		if phase == "simulating" and progress.get("frame") is Array and iteration >= iterations_shown and has_structure:
 			if iteration != live_iteration:
 				_begin_live_shake(iteration)
@@ -1986,6 +2122,7 @@ func _begin_live_shake(iteration: int) -> void:
 		return
 	var state = live.get("model_state")
 	structure_display.build_state(current_topo, state if state is Dictionary else {}, live.get("highlighted", []))
+	_set_highlights(true)
 	structure_display.set_frame_nodes(live.get("node_keys", []))
 	live_iteration = iteration
 	live_active = true
@@ -2011,7 +2148,7 @@ func _set_live_target(frame: Array, time_s: float, ruptures: Array) -> void:
 	var rupture_note := ""
 	if not live_dropped.is_empty():
 		rupture_note = "   %d member(s) past rupture strain" % live_dropped.size()
-	shake_label.text = "Iteration %d live shake   t = %.1f s   displacements x%.0f%s" % [live_iteration, time_s, live_magnification, rupture_note]
+	shake_label.text = "%s live shake   t = %.1f s   displacements x%.0f%s" % [_iteration_name(live_iteration), time_s, live_magnification, rupture_note]
 	shake_label.visible = true
 
 func _update_live_shake(delta: float) -> void:
@@ -2080,71 +2217,108 @@ func _add_iteration_entry(index: int, record: Dictionary) -> void:
 	row.add_theme_constant_override("separation", 6)
 
 	var button := Button.new()
-	button.text = "Iteration %d  %s%s" % [index, record.get("overall_status", "?"),
+	var iteration_name := _iteration_name(index)
+	button.tooltip_text = "%s  %s%s" % [iteration_name, record.get("overall_status", "?"),
 		("  (rules " + ", ".join(rules) + ")") if not rules.is_empty() else ""]
-	button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	button.custom_minimum_size = Vector2(0, 40)
 	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	button.focus_mode = Control.FOCUS_NONE
-	button.add_theme_font_override("font", font_inter)
-	button.add_theme_font_size_override("font_size", 14)
-	button.add_theme_color_override("font_color", COLOR_TEXT)
-	button.add_theme_color_override("font_hover_color", COLOR_BLUE)
 	button.add_theme_stylebox_override("normal", _style_box(COLOR_PANEL_TINT, COLOR_BORDER, 1, 6, 6))
 	button.add_theme_stylebox_override("hover", _style_box(COLOR_PANEL_TINT, COLOR_BLUE, 1, 6, 6))
 	button.add_theme_stylebox_override("pressed", _style_box(COLOR_PANEL_TINT, COLOR_BLUE, 1, 6, 6))
+
+	var button_row := HBoxContainer.new()
+	button_row.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	button_row.offset_left = 8
+	button_row.offset_right = -6
+	button_row.add_theme_constant_override("separation", 6)
+	button_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	button.add_child(button_row)
+	for part in [[iteration_name, font_inter], [str(record.get("overall_status", "?")), font_poppins_bold],
+			["(rules " + ", ".join(rules) + ")" if not rules.is_empty() else "", font_inter]]:
+		if part[0] == "":
+			continue
+		var part_label := Label.new()
+		part_label.text = part[0]
+		part_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		part_label.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		part_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		part_label.add_theme_font_override("font", part[1])
+		part_label.add_theme_font_size_override("font_size", 14)
+		part_label.add_theme_color_override("font_color", COLOR_TEXT)
+		button_row.add_child(part_label)
 
 	var run_dir := current_run_dir
 	button.pressed.connect(func(): _on_iteration_pressed(run_dir, index))
 	row.add_child(button)
 
-	var download_btn := Button.new()
-	download_btn.text = "⬇"
-	download_btn.tooltip_text = "Download iteration %d record" % index
-	download_btn.custom_minimum_size = Vector2(44, 40)
-	download_btn.focus_mode = Control.FOCUS_NONE
-	download_btn.add_theme_font_override("font", font_poppins_bold)
-	download_btn.add_theme_font_size_override("font_size", 24)
-	download_btn.add_theme_color_override("font_color", Color("#0755e9"))
-	download_btn.add_theme_color_override("font_hover_color", Color("#003fc4"))
-	download_btn.add_theme_color_override("font_pressed_color", Color("#00349f"))
-	download_btn.add_theme_color_override("font_focus_color", Color("#0755e9"))
-	download_btn.add_theme_stylebox_override("normal", _style_box(Color("#eaf2ff"), Color("#8bb5ff"), 2, 8, 4))
-	download_btn.add_theme_stylebox_override("hover", _style_box(Color("#d8e7ff"), Color("#0755e9"), 2, 8, 4))
-	download_btn.add_theme_stylebox_override("pressed", _style_box(Color("#c5dcff"), Color("#003fc4"), 2, 8, 4))
-	download_btn.pressed.connect(func(): _download_iteration_record(run_dir, index))
-	row.add_child(download_btn)
+	var pdf_button := Button.new()
+	pdf_button.text = "⬇"
+	pdf_button.tooltip_text = "Download %s as a PDF report" % iteration_name
+	pdf_button.custom_minimum_size = Vector2(44, 40)
+	pdf_button.focus_mode = Control.FOCUS_NONE
+	pdf_button.add_theme_font_override("font", font_poppins_bold)
+	pdf_button.add_theme_font_size_override("font_size", 24)
+	pdf_button.add_theme_color_override("font_color", Color("#0755e9"))
+	pdf_button.add_theme_color_override("font_hover_color", Color("#003fc4"))
+	pdf_button.add_theme_color_override("font_pressed_color", Color("#00349f"))
+	pdf_button.add_theme_color_override("font_focus_color", Color("#0755e9"))
+	pdf_button.add_theme_stylebox_override("normal", _style_box(Color("#eaf2ff"), Color("#8bb5ff"), 2, 8, 4))
+	pdf_button.add_theme_stylebox_override("hover", _style_box(Color("#d8e7ff"), Color("#0755e9"), 2, 8, 4))
+	pdf_button.add_theme_stylebox_override("pressed", _style_box(Color("#c5dcff"), Color("#003fc4"), 2, 8, 4))
+	pdf_button.pressed.connect(func(): _on_pdf_pressed(run_dir, index))
+	row.add_child(pdf_button)
 
 	iteration_list.add_child(row)
 
-func _download_iteration_record(run_dir: String, index: int) -> void:
-	var record_path := run_dir.path_join("iteration_%d" % index).path_join("record.json")
-	var record = _read_json(record_path)
-	if not record is Dictionary:
-		_log_terminal("ERROR: iteration %d record could not be found" % index)
+func _iteration_name(index: int) -> String:
+	return "Initial Iteration" if index == 0 else "Iteration %d" % index
+
+func _pdf_export_busy() -> bool:
+	return pdf_pid != -1 and OS.is_process_running(pdf_pid)
+
+func _on_pdf_pressed(run_dir: String, index: int) -> void:
+	if _pdf_export_busy():
+		_log_terminal("a PDF report is already being saved; try again in a moment")
 		return
+	pdf_request = {"run_dir": run_dir, "index": index}
+	pdf_dialog.current_dir = OS.get_system_dir(OS.SYSTEM_DIR_DOWNLOADS)
+	pdf_dialog.current_file = "ProGen_%s_iteration_%d.pdf" % [run_dir.get_file(), index]
+	pdf_dialog.popup_centered_ratio(0.6)
 
-	var json_text := JSON.stringify(record, "\t")
-	var filename := "ProGen_iteration_%d_record.json" % index
-
-	if OS.has_feature("web"):
-		JavaScriptBridge.download_buffer(json_text.to_utf8_buffer(), filename, "application/json")
-		_log_terminal("downloaded iteration %d record" % index)
+func _on_pdf_path_selected(path: String) -> void:
+	if pdf_request.is_empty():
 		return
+	if not path.to_lower().ends_with(".pdf"):
+		path += ".pdf"
+	_start_pdf_export(pdf_request["run_dir"], int(pdf_request["index"]), path)
+	pdf_request = {}
 
-	var save_path := "user://%s" % filename
-	var file := FileAccess.open(save_path, FileAccess.WRITE)
-	if file == null:
-		_log_terminal("ERROR: could not save iteration %d record" % index)
+func _start_pdf_export(run_dir: String, index: int, path: String) -> void:
+	var script_path := _engine_dir().path_join("pdf_report.py")
+	pdf_started_unix = Time.get_unix_time_from_system()
+	pdf_output = path
+	pdf_run_dir = run_dir
+	pdf_pid = OS.create_process(_python_executable(), PackedStringArray([
+		script_path, "--run-dir", run_dir, "--iteration", str(index), "--output", path]))
+	if pdf_pid == -1:
+		_log_terminal("ERROR: could not start the PDF report export")
 		return
-	file.store_string(json_text)
-	file.close()
-	_log_terminal("saved iteration %d record to %s" % [index, save_path])
+	_log_terminal("saving %s as PDF..." % _iteration_name(index))
 
+func _update_pdf_export() -> void:
+	if pdf_pid == -1 or OS.is_process_running(pdf_pid):
+		return
+	pdf_pid = -1
+	if FileAccess.file_exists(pdf_output) and FileAccess.get_modified_time(pdf_output) >= int(pdf_started_unix) - 1:
+		_log_terminal("saved PDF report: %s" % pdf_output)
+	else:
+		_log_terminal("ERROR: the PDF report could not be saved to %s (check that the folder exists and the file is not open in another program)" % pdf_output)
 
 func _on_iteration_pressed(run_dir: String, index: int) -> void:
 	var record = _read_json(run_dir.path_join("iteration_%d" % index).path_join("record.json"))
 	if not record is Dictionary:
-		_log_terminal("ERROR: iteration %d is no longer on disk" % index)
+		_log_terminal("ERROR: %s is no longer on disk" % _iteration_name(index))
 		return
 	_show_iteration(run_dir, index, record)
 
@@ -2159,20 +2333,62 @@ func _show_iteration(run_dir: String, index: int, record: Dictionary) -> void:
 		var model_state: Dictionary = state if state is Dictionary else {}
 		if not live_active:
 			structure_display.build_state(current_topo, model_state, highlighted)
-		_set_preview(run_dir, index, model_state, highlighted)
+			_set_highlights(true)
+		_set_preview(run_dir, index)
 	_log_record(record)
 
-func _set_preview(run_dir: String, index: int, model_state: Dictionary, highlighted: Array) -> void:
+func _set_highlights(visible_colors: bool) -> void:
+	highlights_visible = visible_colors
+	if structure_display:
+		structure_display.set_highlights(visible_colors)
+	if highlights_button:
+		highlights_button.tooltip_text = ("Hide" if visible_colors else "Show") + " the feedback colors (red changes, orange braces, purple struts)"
+	if highlights_icon:
+		highlights_icon.queue_redraw()
+
+func _draw_highlights_icon() -> void:
+	var c := COLOR_BLUE
+	var center := Vector2(11, 9)
+	var points := PackedVector2Array()
+	for i in range(13):
+		var t := float(i) / 12.0
+		points.append(Vector2(1 + 20 * t, 9 - 7 * sin(PI * t)))
+	for i in range(13):
+		var t := 1.0 - float(i) / 12.0
+		points.append(Vector2(1 + 20 * t, 9 + 7 * sin(PI * t)))
+	highlights_icon.draw_polyline(points, c, 1.6, true)
+	highlights_icon.draw_circle(center, 3.2, c)
+	if not highlights_visible:
+		highlights_icon.draw_line(Vector2(2, 17), Vector2(20, 1), Color.WHITE, 4.0, true)
+		highlights_icon.draw_line(Vector2(2, 17), Vector2(20, 1), c, 1.8, true)
+
+func _on_gif_download_pressed() -> void:
+	if gif_path == "" or not FileAccess.file_exists(gif_path) or preview_index < 0:
+		return
+	gif_dialog.current_dir = OS.get_system_dir(OS.SYSTEM_DIR_DOWNLOADS)
+	gif_dialog.current_file = "ProGen_%s_iteration_%d.gif" % [preview_run_dir.get_file(), preview_index]
+	gif_dialog.popup_centered_ratio(0.6)
+
+func _on_gif_path_selected(path: String) -> void:
+	if gif_path == "" or not FileAccess.file_exists(gif_path):
+		_log_terminal("ERROR: the Simulation GIF is no longer on disk")
+		return
+	if DirAccess.copy_absolute(gif_path, path) == OK:
+		_log_terminal("SUCCESS: saved Simulation GIF: %s" % path)
+		_show_toast("Simulation GIF saved.", "success")
+	else:
+		_log_terminal("ERROR: the Simulation GIF could not be saved to %s (check that the folder exists and the file is not open in another program)" % path)
+
+func _set_preview(run_dir: String, index: int) -> void:
 	preview_playing = false
 	preview_holding = false
 	preview_frames = []
 	preview_run_dir = run_dir
 	preview_index = index
-	preview_view.build_state(current_topo, model_state, highlighted)
-	_frame_preview_camera()
-	preview_hint.text = "Iteration %d  -  click to play shake" % index
+	preview_hint.text = "%s  -  click to replay in the 3D view" % _iteration_name(index)
 	if not live_active:
 		shake_label.visible = false
+	_show_gif(run_dir.path_join("iteration_%d" % index).path_join("simulation.gif"))
 
 func _clear_preview() -> void:
 	preview_playing = false
@@ -2180,23 +2396,150 @@ func _clear_preview() -> void:
 	preview_frames = []
 	preview_run_dir = ""
 	preview_index = -1
-	if preview_view != null:
-		preview_view.clear()
+	_stop_gif()
 	if preview_hint != null:
 		preview_hint.text = "Select an iteration to preview its seismic performance"
 	if shake_label != null and not live_active:
 		shake_label.visible = false
 
-func _frame_preview_camera() -> void:
-	var width_x: float = float(current_params["bay_count_x"]) * float(current_params["bay_width_x"])
-	var width_z: float = float(current_params["bay_count_y"]) * float(current_params["bay_width_y"])
-	var height_y: float = float(current_params["floor_count"]) * float(current_params["story_height"])
-	var extents := Vector3(width_x, height_y, width_z)
-	var center := extents / 2.0
-	var half_fov_rad := deg_to_rad(preview_camera.fov) / 2.0
-	var distance: float = max(extents.length() / 2.0 / sin(half_fov_rad) * 1.2, 6.0)
-	preview_camera.global_position = center + Vector3(1.0, 0.7, 1.0).normalized() * distance
-	preview_camera.look_at(center, Vector3.UP)
+func _gif_key(path: String) -> String:
+	return "%s|%d" % [path, FileAccess.get_modified_time(path)]
+
+func _show_gif(path: String) -> void:
+	_stop_gif()
+	gif_path = path
+	gif_last_poll_ms = 0
+	if not FileAccess.file_exists(path):
+		preview_hint.text = "%s  -  rendering GIF..." % _iteration_name(preview_index)
+		gif_checked_runs[preview_run_dir] = true
+		_request_gif_export(preview_run_dir)
+		return
+	if not gif_checked_runs.has(preview_run_dir):
+		gif_checked_runs[preview_run_dir] = true
+		_request_gif_export(preview_run_dir)
+	var key := _gif_key(path)
+	if gif_cache.has(key):
+		_play_gif(gif_cache[key], key)
+	else:
+		preview_hint.text = "%s  -  loading GIF..." % _iteration_name(preview_index)
+		_start_gif_decode(path)
+
+func _stop_gif() -> void:
+	gif_path = ""
+	gif_frames = []
+	gif_delays = PackedFloat32Array()
+	gif_frame_index = 0
+	gif_frame_time = 0.0
+	gif_playing_key = ""
+	if preview_image != null:
+		preview_image.texture = null
+
+func _play_gif(entry: Dictionary, key: String) -> void:
+	gif_playing_key = key
+	gif_frames = entry["frames"]
+	gif_delays = entry["delays"]
+	gif_frame_index = 0
+	gif_frame_time = 0.0
+	gif_texture = ImageTexture.create_from_image(gif_frames[0])
+	preview_image.texture = gif_texture
+	if preview_index >= 0 and not preview_playing:
+		preview_hint.text = "%s  -  click to replay in the 3D view" % _iteration_name(preview_index)
+
+func _decode_gif_task(path: String) -> void:
+	gif_task_result = GifDecoder.decode_file(path)
+
+func _start_gif_decode(path: String) -> void:
+	if gif_task_id != -1:
+		return
+	gif_task_path = path
+	gif_task_key = _gif_key(path)
+	gif_task_result = {}
+	gif_task_id = WorkerThreadPool.add_task(_decode_gif_task.bind(path))
+
+func _remember_gif(key: String, entry: Dictionary) -> void:
+	gif_cache[key] = entry
+	gif_cache_order.erase(key)
+	gif_cache_order.append(key)
+	while gif_cache_order.size() > GIF_CACHE_LIMIT:
+		gif_cache.erase(gif_cache_order.pop_front())
+
+func _clear_gif_cache() -> void:
+	gif_cache.clear()
+	gif_cache_order.clear()
+
+func _app_root() -> String:
+	if OS.has_feature("template"):
+		return OS.get_executable_path().get_base_dir()
+	return ProjectSettings.globalize_path("res://..")
+
+func _engine_dir() -> String:
+	if OS.has_feature("template"):
+		return _app_root().path_join("engine")
+	return _app_root()
+
+func _python_executable() -> String:
+	var bundled := _app_root().path_join("python/python.exe")
+	if FileAccess.file_exists(bundled):
+		return bundled
+	return _app_root().path_join(".venv-1/Scripts/python.exe")
+
+func _request_gif_export(run_dir: String) -> void:
+	if run_dir == "":
+		return
+	if gif_export_pid != -1 and OS.is_process_running(gif_export_pid):
+		gif_export_pending[run_dir] = true
+		return
+	var script_path := _engine_dir().path_join("gif_exporter.py")
+	gif_export_pid = OS.create_process(_python_executable(), PackedStringArray([script_path, "--run-dir", run_dir]))
+	gif_export_run = run_dir
+	if gif_export_pid == -1:
+		_log_terminal("ERROR: could not start the Simulation GIF exporter")
+
+func _gif_export_busy() -> bool:
+	return gif_export_pid != -1 and OS.is_process_running(gif_export_pid)
+
+func _update_gif(delta: float) -> void:
+	if gif_task_id != -1 and WorkerThreadPool.is_task_completed(gif_task_id):
+		WorkerThreadPool.wait_for_task_completion(gif_task_id)
+		gif_task_id = -1
+		var result := gif_task_result
+		if result.get("ok", false):
+			var entry := {"frames": result["frames"], "delays": result["delays"]}
+			_remember_gif(gif_task_key, entry)
+			if gif_task_path == gif_path:
+				_play_gif(entry, gif_task_key)
+		elif gif_task_path == gif_path:
+			preview_hint.text = "%s  -  GIF could not be read" % _iteration_name(preview_index)
+	if gif_export_pid != -1 and not OS.is_process_running(gif_export_pid):
+		gif_export_pid = -1
+		gif_export_run = ""
+		if not gif_export_pending.is_empty():
+			var next_run: String = gif_export_pending.keys()[0]
+			gif_export_pending.erase(next_run)
+			_request_gif_export(next_run)
+	if gif_path != "" and gif_task_id == -1:
+		var now_ms := Time.get_ticks_msec()
+		if now_ms - gif_last_poll_ms >= GIF_POLL_MS:
+			gif_last_poll_ms = now_ms
+			if FileAccess.file_exists(gif_path):
+				var key := _gif_key(gif_path)
+				if key != gif_playing_key:
+					if gif_cache.has(key):
+						_play_gif(gif_cache[key], key)
+					else:
+						_start_gif_decode(gif_path)
+			elif gif_frames.is_empty() and not _gif_export_busy() and gif_export_pending.is_empty():
+				preview_hint.text = "%s  -  GIF could not be rendered" % _iteration_name(preview_index)
+	if gif_frames.is_empty() or gif_delays.is_empty():
+		return
+	gif_frame_time += delta
+	var advanced := false
+	while gif_frame_time >= gif_delays[gif_frame_index]:
+		gif_frame_time -= gif_delays[gif_frame_index]
+		gif_frame_index = (gif_frame_index + 1) % gif_frames.size()
+		advanced = true
+	if advanced:
+		gif_texture.update(gif_frames[gif_frame_index])
 
 func _on_preview_input(event: InputEvent) -> void:
 	if not (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT):
@@ -2204,15 +2547,14 @@ func _on_preview_input(event: InputEvent) -> void:
 	if preview_index < 0:
 		return
 	if python_simulation_running:
-		preview_hint.text = "Iteration %d  -  playback is available after the run" % preview_index
+		preview_hint.text = "%s  -  playback is available after the run" % _iteration_name(preview_index)
 		return
 	var data = _read_json(preview_run_dir.path_join("iteration_%d" % preview_index).path_join("frames.json"))
 	if not data is Dictionary or (data.get("frames", []) as Array).is_empty():
-		preview_hint.text = "Iteration %d  -  no shake frames saved (collapsed under gravity)" % preview_index
+		preview_hint.text = "%s  -  no shake frames saved (collapsed under gravity)" % _iteration_name(preview_index)
 		return
-	for view in [preview_view, structure_display]:
-		view.reset_frame()
-		view.set_frame_nodes(data.get("node_keys", []))
+	structure_display.reset_frame()
+	structure_display.set_frame_nodes(data.get("node_keys", []))
 	preview_ruptures = data.get("ruptures", [])
 	preview_next_rupture = 0
 	preview_collapse_time = data.get("collapse_time_s")
@@ -2229,7 +2571,7 @@ func _on_preview_input(event: InputEvent) -> void:
 	preview_playing = true
 
 func _update_preview_playback(delta: float) -> void:
-	var views := [preview_view, structure_display]
+	var views := [structure_display]
 	if preview_holding:
 		for view in views:
 			view.update_falls(delta)
@@ -2255,11 +2597,11 @@ func _update_preview_playback(delta: float) -> void:
 				view.drop_member(preview_ruptures[preview_next_rupture].get("nodes", []))
 			preview_next_rupture += 1
 		if preview_collapse_time != null:
-			preview_hint.text = "Iteration %d  collapse at t = %.2f s  -  click to replay" % [preview_index, float(preview_collapse_time)]
-			shake_label.text = "Iteration %d replay   collapse at t = %.2f s (analysis stopped)" % [preview_index, float(preview_collapse_time)]
+			preview_hint.text = "%s  collapse at t = %.2f s  -  click to replay in the 3D view" % [_iteration_name(preview_index), float(preview_collapse_time)]
+			shake_label.text = "%s replay   collapse at t = %.2f s (analysis stopped)" % [_iteration_name(preview_index), float(preview_collapse_time)]
 		else:
-			preview_hint.text = "Iteration %d  -  click to replay shake" % preview_index
-			shake_label.text = "Iteration %d replay   end of record   displacements x%.0f" % [preview_index, preview_magnification]
+			preview_hint.text = "%s  -  click to replay in the 3D view" % _iteration_name(preview_index)
+			shake_label.text = "%s replay   end of record   displacements x%.0f" % [_iteration_name(preview_index), preview_magnification]
 		return
 	var a: PackedFloat32Array = preview_frames[index]
 	var b: PackedFloat32Array = preview_frames[index + 1]
@@ -2270,12 +2612,12 @@ func _update_preview_playback(delta: float) -> void:
 		values[i] = lerp(a[i], b[i], t)
 	for view in views:
 		view.apply_frame(values, preview_magnification)
-	preview_hint.text = "Iteration %d   t = %.1f s   x%.0f" % [preview_index, (index + t) * preview_frame_dt, preview_magnification]
-	shake_label.text = "Iteration %d replay   t = %.1f s   displacements x%.0f" % [preview_index, (index + t) * preview_frame_dt, preview_magnification]
+	preview_hint.text = "%s  -  replaying in the 3D view" % _iteration_name(preview_index)
+	shake_label.text = "%s replay   t = %.1f s   displacements x%.0f" % [_iteration_name(preview_index), (index + t) * preview_frame_dt, preview_magnification]
 	shake_label.visible = true
 
 func _log_record(parsed: Dictionary) -> void:
-	var header := "Iteration %d" % int(parsed.get("iteration", 0)) if parsed.has("iteration") else "NLTHA results"
+	var header := _iteration_name(int(parsed.get("iteration", 0))) if parsed.has("iteration") else "NLTHA results"
 	_log_terminal("----- %s: building %d -----" % [header, int(parsed.get("building_id", 0))])
 	var applied = parsed.get("applied_feedback")
 	if applied is Dictionary:
@@ -2291,8 +2633,8 @@ func _log_record(parsed: Dictionary) -> void:
 		var parts: Array[String] = []
 		for text in counts:
 			parts.append("%s x%d" % [text, counts[text]])
-		_log_terminal("feedback applied from iteration %d (sizing: %s): %s" % [
-			int(applied.get("from_iteration", 0)), str(applied.get("sizing_mode", "demand ratio")), ", ".join(parts)])
+		_log_terminal("feedback applied from %s (sizing: %s): %s" % [
+			_iteration_name(int(applied.get("from_iteration", 0))), str(applied.get("sizing_mode", "demand ratio")), ", ".join(parts)])
 		var limited: Array = applied.get("section_limit_reached", [])
 		if not limited.is_empty():
 			_log_terminal("  section limit reached (already W36X529) for %d member(s)" % limited.size())
@@ -2425,6 +2767,15 @@ func _on_clean_runs_pressed() -> void:
 	if python_simulation_running:
 		_log_terminal("cannot clean runs while a simulation is running")
 		return
+	if cancel_delete_dir != "":
+		_log_terminal("cannot clean runs while the cancelled run is being deleted")
+		return
+	if _gif_export_busy() or not gif_export_pending.is_empty():
+		_log_terminal("cannot clean runs while Simulation GIFs are being rendered")
+		return
+	if _pdf_export_busy():
+		_log_terminal("cannot clean runs while a PDF report is being saved")
+		return
 	var runs := _list_run_dirs()
 	if runs.is_empty():
 		_log_terminal("no previous runs to clean")
@@ -2438,7 +2789,7 @@ func _on_clean_runs_pressed() -> void:
 	clean_runs_dialog.popup_centered()
 
 func _on_clean_runs_confirmed() -> void:
-	if python_simulation_running:
+	if python_simulation_running or _gif_export_busy() or not gif_export_pending.is_empty() or _pdf_export_busy():
 		return
 	var deleted := 0
 	var failed := 0
@@ -2450,6 +2801,9 @@ func _on_clean_runs_confirmed() -> void:
 	current_run_dir = ""
 	_clear_iteration_list()
 	_clear_preview()
+	_clear_gif_cache()
+	gif_checked_runs.clear()
+	_on_reset_pressed()
 	if failed > 0:
 		_log_terminal("deleted %d run(s); %d could not be deleted" % [deleted, failed])
 	else:
@@ -2470,24 +2824,98 @@ func _on_reset_pressed() -> void:
 	has_structure = false
 	if simulation_controls:
 		simulation_controls.visible = false
-	if structural_summary_title:
-		structural_summary_title.visible = false
-	if structural_summary_box:
-		structural_summary_box.visible = false
-	if structural_summary_divider:
-		structural_summary_divider.visible = false
+	_set_structural_summary_visible(false)
 	if structural_controls:
 		structural_controls.visible = true
-	if run_simulation_button:
-		run_simulation_button.visible = true
 	current_params = {}
 	current_topo = {}
 	vp_label.visible = true
 	rule_preview_dropdown.select(0)
 	rule_preview_dropdown.visible = false
 	_reset_terminal()
-	_reset_structure_zoom()
 	_show_toast("Structure reset.", "info")
+
+func _set_cancel_mode(cancel: bool) -> void:
+	if reset_button == null:
+		return
+	if run_simulation_button:
+		run_simulation_button.visible = not cancel
+	if seismic_help_label:
+		seismic_help_label.visible = not cancel
+	for field in [magnitude_input, duration_input]:
+		if field != null:
+			field.get_parent().visible = not cancel
+	if cancel:
+		_refresh_seismic_summary()
+		_set_structural_summary_visible(true)
+	if seismic_summary_box:
+		seismic_summary_box.visible = cancel
+	if cancel:
+		reset_button.text = "✕   Cancel Simulation"
+		reset_button.add_theme_color_override("font_color", Color("#dc2626"))
+		reset_button.add_theme_color_override("font_hover_color", Color("#b91c1c"))
+		reset_button.add_theme_stylebox_override("normal", _style_box(Color("#ffffff"), Color("#ef4444"), 1, 9, 12))
+		reset_button.add_theme_stylebox_override("hover", _style_box(Color("#fff7f7"), Color("#dc2626"), 1, 9, 12))
+		reset_button.add_theme_stylebox_override("pressed", _style_box(Color("#fff1f1"), Color("#b91c1c"), 1, 9, 12))
+	else:
+		reset_button.text = "↻   Reset Structure"
+		reset_button.add_theme_color_override("font_color", COLOR_BLUE)
+		reset_button.add_theme_color_override("font_hover_color", COLOR_BLUE)
+		reset_button.add_theme_stylebox_override("normal", _style_box(Color("#ffffff"), Color("#1267f4"), 1, 9, 12))
+		reset_button.add_theme_stylebox_override("hover", _style_box(Color("#f5f9ff"), Color("#1267f4"), 1, 9, 12))
+		reset_button.add_theme_stylebox_override("pressed", _style_box(Color("#edf4ff"), Color("#1267f4"), 1, 9, 12))
+
+func _on_reset_or_cancel_pressed() -> void:
+	if python_simulation_running:
+		_cancel_simulation()
+	else:
+		_on_reset_pressed()
+
+func _cancel_simulation() -> void:
+	var run_dir := current_run_dir
+	if python_simulation_pid != -1 and OS.is_process_running(python_simulation_pid):
+		OS.kill(python_simulation_pid)
+	python_simulation_running = false
+	python_simulation_pid = -1
+	if gif_export_run == run_dir and _gif_export_busy():
+		OS.kill(gif_export_pid)
+		gif_export_pid = -1
+		gif_export_run = ""
+	gif_export_pending.erase(run_dir)
+	if pdf_run_dir == run_dir and _pdf_export_busy():
+		OS.kill(pdf_pid)
+		pdf_pid = -1
+		_log_terminal("stopped the PDF report export of the cancelled run")
+	_set_cancel_mode(false)
+	_stop_live_shake()
+	_clear_preview()
+	_clear_gif_cache()
+	gif_checked_runs.erase(run_dir)
+	_clear_iteration_list()
+	current_run_dir = ""
+	if has_structure:
+		structure_display.build(current_topo)
+	if is_instance_valid(clean_runs_button):
+		clean_runs_button.disabled = false
+	_log_terminal("WARNING: simulation cancelled")
+	if run_dir != "":
+		cancel_delete_dir = run_dir
+		cancel_delete_deadline_ms = Time.get_ticks_msec() + 10000
+		cancel_delete_next_ms = 0
+
+func _update_cancel_delete() -> void:
+	if cancel_delete_dir == "":
+		return
+	var now_ms := Time.get_ticks_msec()
+	if now_ms < cancel_delete_next_ms:
+		return
+	cancel_delete_next_ms = now_ms + 250
+	if not DirAccess.dir_exists_absolute(cancel_delete_dir) or _delete_dir_recursive(cancel_delete_dir):
+		_log_terminal("deleted the unfinished run runs/%s" % cancel_delete_dir.get_file())
+		cancel_delete_dir = ""
+	elif now_ms >= cancel_delete_deadline_ms:
+		_log_terminal("ERROR: the unfinished run runs/%s could not be fully deleted; use Clear Previous Runs" % cancel_delete_dir.get_file())
+		cancel_delete_dir = ""
 
 func _on_rule_preview_selected(index: int) -> void:
 	structure_display.build(current_topo)
@@ -2571,7 +2999,6 @@ func _simple_stage_card(icon_text: String, title: String, subtitle: String, bull
 	inner.add_theme_constant_override("separation", 10)
 	card.add_child(inner)
 
-	# Left-aligned icon + title on one line.
 	var top := HBoxContainer.new()
 	top.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top.alignment = BoxContainer.ALIGNMENT_BEGIN
@@ -2606,7 +3033,6 @@ func _simple_stage_card(icon_text: String, title: String, subtitle: String, bull
 		var bullet_label := _left_label("•  %s" % bullet, font_inter, 13, COLOR_MUTED)
 		inner.add_child(bullet_label)
 	return card
-
 
 func _feature_card(title: String, description: String, icon: Texture2D) -> PanelContainer:
 	var card := PanelContainer.new()
@@ -2811,6 +3237,9 @@ func _linear_gradient_texture(colors: Array[Color], offsets: Array[float]) -> Te
 	return texture
 
 func _load_font(path: String) -> FontFile:
+	var imported := load(path) as FontFile
+	if imported != null:
+		return imported
 	var font := FontFile.new()
 	font.load_dynamic_font(path)
 	return font

@@ -15,7 +15,7 @@ One module per System Architecture layer (thesis Figure 5):
 | File | Layer | Purpose |
 |---|---|---|
 | `input_management.py` | Input Management | `BuildingTopology`, `MaterialProps` (AK Steel Grade 25, Table 2), `WSection` records loaded from `w_sections.json`, starting section |
-| `w_sections.json` | Input Management (data) | 17 AISC W-shapes, W10X15 to W36X529, generated from the AISC Shapes Database v16.0 (metric columns), in SI units, ordered as the upsizing sequence |
+| `w_sections.json` | Input Management (data) | 17 AISC W-shapes, W10X15 to W36X529, generated from the AISC Shapes Database v16.0 (metric columns), in SI units, ordered as the upsizing sequence; members start at W12X26 and are only upsized, so W10X15 (the earlier starting size) is never used |
 | `procedural_content_generation.py` | Procedural Content Generation | Node/column/beam grid plus the model state: W-section per member, X-braces, mid-height struts |
 | `seismic_simulation.py` | Seismic Simulation | Ground motion, OpenSeesPy model, gravity + masses, elastic story stiffness, NLTHA, response tracking |
 | `performance_evaluation.py` | Performance Evaluation | Element / floor / structure scope checks for all ten Table 1 triggers, with demand ratios |
@@ -43,9 +43,9 @@ sample. `--topology file.json` takes any JSON following `SCHEMA.md`.
 ```
 ```
 
-Open `godot_ui/` in Godot 4.4.1 and run the main scene. `GENERATE STRUCTURE`
-draws the frame; `RUN SIMULATION` runs the closed loop in the background
-(no further clicks) and saves everything for that run in `runs/run_<date-time>/`:
+Open `godot_ui/` in Godot 4.4.1 and run the main scene. `Generate Structure`
+draws the frame and replaces the Structural Inputs with the Seismic Inputs;
+`Run Simulation` runs the closed loop in the background (no further clicks) and saves everything for that run in `runs/run_<date-time>/`:
 
 - `input.json`: the building, loads, magnitude and duration sent to Python
 - `iteration_<n>/record.json`: peak metrics, fundamental period, drift limit,
@@ -62,6 +62,8 @@ draws the frame; `RUN SIMULATION` runs the closed loop in the background
   Rule 3 criterion) with its two end nodes, and the collapse time if the
   analysis stopped converging; absent when the structure collapsed under
   gravity
+- `iteration_<n>/simulation.gif`: the Simulation GIF of that iteration
+  (520 x 280 px, 3x speed, loops), written by `gif_exporter.py`
 
 Each iteration folder is written under a temporary name and renamed when
 complete; Godot lists it in the Iteration Records panel as soon as it
@@ -73,17 +75,44 @@ when the iteration cap is reached, or when no rule can change anything.
 moves the structure with the node displacements OpenSeesPy is computing at
 that moment (Python writes one frame every 10 steps; Godot eases toward the
 newest one). The shake stops when the iteration folder is saved. After the
-run, the Simulation Preview (top right) shows the structure of the selected
-iteration; click it to replay that iteration's `frames.json` in real time in both the preview and the main viewport
-(0.1 s frames, linearly interpolated). Both views draw each member straight
+run, click the Simulation Preview (top right) to replay the displayed
+iteration's `frames.json` in real time in the main viewport (0.1 s frames,
+linearly interpolated). The main view draws each member straight
 between its two analysis nodes, so members stay connected (columns with a
 strut are drawn in two segments meeting at the strut's mid-height node) and
 base nodes stay fixed. Displacements are relative to the ground and are
-magnified for visibility; the factor is shown on screen (the preview scales
+magnified for visibility; the factor is shown on screen (the replay scales
 the record's peak node displacement to 4 % of the building height, capped
 at x200; the live view uses the peak seen so far in the run, so its factor
 only decreases). Member bending between nodes, ground translation, and
 vertical displacements are not drawn.
+
+**Simulation GIF.** The Simulation Preview panel loops a GIF of the
+iteration on display. `gif_exporter.py` (Pillow) draws it from the saved
+`frames.json` with the same camera angle, colors, magnification,
+column-length rule and falling members as the 3D replay, using every third
+0.1 s frame shown 0.1 s apart (3x speed); a collapsed iteration ends on the
+collapse and an iteration that collapsed under gravity is a single still
+image. Godot starts the exporter as a separate process right after each
+iteration is saved, and when a run is opened whose GIFs are missing or were
+made by an older exporter version (the version is stored in the GIF comment).
+Godot decodes the GIF with `godot_ui/scripts/gif_decoder.gd`, because Godot
+does not load GIF files. `gif_exporter.py` is not part of the tool
+fingerprint, since the GIF does not affect any result.
+
+**PDF report per iteration.** Each Iteration Records row has a **PDF**
+button. It asks where to save (the Downloads folder by default) and runs
+`pdf_report.py` (ReportLab), which writes an A4 report of that iteration: a
+picture of the structure at rest without highlights, then GENERATION,
+SIMULATION, PERFORMANCE METRICS (displacements in mm), EVALUATION (pass or
+fail per level, triggered rules as counts, drift by floor), FEEDBACK (the
+changes that produced the iteration) and INTERPRETATION (rule-based
+paragraphs built only from saved values: a bold PASSES or DOES NOT PASS
+verdict with plain-language reasons, peak stress as a share of yield, the
+largest drift against the NSCP limit, an "In short" summary, the change
+from the previous iteration, what feedback did next, why the run ended,
+and a note that it is not a design certification). It can also be run directly:
+`python pdf_report.py --run-dir runs/<run> --iteration <n> --output <file>.pdf`.
 
 **Collapse view.** A member falls to the ground at the record time its
 peak strain first exceeds the rupture strain (the same criterion as Rule
@@ -106,7 +135,7 @@ frame with fallen members on the ground and shows the collapse time.
 | 1, 3 | Upsize the member to the smallest listed section with A and Sx ≥ current x demand ratio (at least one step) |
 | 2 | Add a Y-direction mid-height strut at the column (preferring a Y-braced bay); if already strutted, upsize to ry ≥ current x √ratio |
 | 4 | X-brace every bay of the floor, both directions (existing braces: upsize with A ≥ current x ratio) |
-| 5 | Upsize the soft story's columns: Ix (X) or Iy (Y) ≥ current x required stiffness ratio |
+| 5 | Upsize the soft story's columns: Ix (X) or Iy (Y) ≥ current x required stiffness ratio; and X-brace every bay of the soft story in the soft direction (existing braces: upsize with A ≥ current x ratio) |
 | 6 | X-brace the perimeter bays of the mid-story floors |
 | 7 | X-brace the weak direction's bays on the floor |
 | 8 | Upsize the columns of the story with the greatest drift: Ix or Iy ≥ current x IDR / limit |
@@ -124,8 +153,18 @@ ProGen design choice; each record logs its `sizing_mode`.
 If gravity collapses, a linear-elastic gravity analysis supplies member
 stresses for Rules 1 and 10.
 
-`Clean Previous Runs` (bottom of the Iteration Records panel) permanently
-deletes every `runs/run_*` folder after a confirmation dialog.
+The view cube at the top right of the 3D panel (X red, Y green, Z blue) turns
+the camera to the clicked view: ±X shows the X-direction frames (Bay X bays
+across the screen), ±Y the Y-direction frames (Bay Y bays), with that axis
+increasing to the right for + and to the left for −; ±Z are the top and bottom
+views (in a face-on view, arrows on its four sides turn to the neighbouring faces);
+`Isometric` and `Reset View` give the isometric and the default angled view.
+
+`Clear Previous Runs` (bottom of the Iteration Records panel) permanently
+deletes every `runs/run_*` folder after a confirmation dialog and resets the
+screen to the Structural Inputs. While a run is processing, `Reset Structure`
+becomes `Cancel Simulation`, which force-stops the run and deletes its
+unfinished folder.
 
 **Run reuse / overwrite.** Before simulating, `simulation.py --run-dir`
 compares the new run's inputs (building fields, loads, magnitude, duration,

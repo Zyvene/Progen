@@ -189,6 +189,8 @@ def apply_feedback(topology: BuildingTopology, model_state: Optional[dict], eval
         for member in _story_columns(topology, entry["floor"]):
             current = state["member_sections"][member]
             req.upsize_member(member, {prop: getattr(SECTIONS[current], prop) * entry["ratio"]}, 5, entry["ratio"])
+        for key in _frame_bays(topology, entry["floor"], entry["axis"], False):
+            req.brace_bay(key, entry["ratio"], 5)
 
     drift_limit = evaluation.get("drift_limit") or floor.get("idr_limit")
     idr_x = {int(k): v for k, v in (floor.get("peak_idr_x_by_floor") or {}).items()}
