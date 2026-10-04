@@ -39,6 +39,7 @@ var tex_bg_blue: Texture2D
 var tex_terminal_success: Texture2D
 var tex_terminal_error: Texture2D
 var tex_terminal_warning: Texture2D
+var tex_terminal_loading: Texture2D
 
 @onready var website: ScrollContainer = %ProGenWebsite
 @onready var page_layout: VBoxContainer = %PageLayout
@@ -73,6 +74,12 @@ var term_scroll: ScrollContainer
 var terminal_panel: PanelContainer
 var structure_display: StaticStructureView
 var structure_camera: FreeCamera
+var structure_zoom_percent: int = 100
+var structure_zoom_label: Label
+var structure_zoom_target: Vector3 = Vector3.ZERO
+var generation_loading_overlay: PanelContainer
+var ui_zoom_percent: int = 100
+var ui_zoom_label: Label
 
 var has_structure: bool = false
 var current_params: Dictionary = {}
@@ -160,6 +167,8 @@ func _ready() -> void:
 	_build_cta()
 	_build_footer()
 	_build_app_view()
+	get_viewport().size_changed.connect(_apply_ui_zoom_layout)
+	_apply_ui_zoom_layout()
 	_load_w_sections()
 
 func _load_w_sections() -> void:
@@ -182,7 +191,11 @@ func _load_assets() -> void:
 	font_poppins_bold = _load_font("res://assets/fonts/Poppins-Bold.ttf")
 
 	tex_logo = _load_texture("res://assets/images/378c25b527b93f4d537c05f5e5e176bde7944f7d.png")
-	tex_hero = _load_texture("res://assets/images/f229d4a87587b430f06eac9a1721e00ff504c72a.png")
+	tex_hero = _load_texture_first([
+		"res://assets/images/progen_hero_new.jpg",
+		"res://assets/images/56cd8b20-4bf7-40c3-9106-51aef609b2a0.jpg",
+		"res://assets/images/f229d4a87587b430f06eac9a1721e00ff504c72a.png",
+	])
 	tex_wrench = _load_texture("res://assets/images/685eb8a845267f833aafffc00ac390593e26b82c.png")
 	tex_earthquakes = _load_texture("res://assets/images/4eadefe6acfaa3f5c07af4310d78a6f0b4d474dd.png")
 	tex_arrows = _load_texture("res://assets/images/925fb8034affbf0e3b5285404e443337e5b0cba5.png")
@@ -202,6 +215,12 @@ func _load_assets() -> void:
 	tex_terminal_warning = _load_texture_first([
 		"res://assets/images/terminal_warning.png",
 		"res://assets/images/line-md--alert (1).png",
+	])
+
+	tex_terminal_loading = _load_texture_first([
+		"res://assets/images/terminal_loading.jpg",
+		"res://assets/images/terminal_loading.svg",
+		"res://assets/images/eos-icons--loading.svg",
 	])
 
 	# Landing-page reference backgrounds. The helper tries a few likely filenames so
@@ -253,6 +272,7 @@ func _switch_to_app() -> void:
 	app_view_container.visible = true
 
 func _switch_to_landing() -> void:
+	_set_ui_zoom(100)
 	app_view_container.visible = false
 	if fixed_hero_background:
 		fixed_hero_background.visible = true
@@ -729,21 +749,67 @@ func _build_app_view() -> void:
 	logo.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	nav_row.add_child(logo)
 
+
 	var nav_spacer := Control.new()
 	nav_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	nav_row.add_child(nav_spacer)
 
+	# Whole-UI zoom controls beside Back to Home.
+	var ui_zoom_group := HBoxContainer.new()
+	ui_zoom_group.add_theme_constant_override("separation", 4)
+	ui_zoom_group.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	nav_row.add_child(ui_zoom_group)
+
+	var ui_zoom_out := Button.new()
+	ui_zoom_out.text = "−"
+	ui_zoom_out.tooltip_text = "Zoom interface out"
+	ui_zoom_out.custom_minimum_size = Vector2(34, 34)
+	ui_zoom_out.focus_mode = Control.FOCUS_NONE
+	ui_zoom_out.add_theme_font_override("font", font_poppins_bold)
+	ui_zoom_out.add_theme_font_size_override("font_size", 17)
+	ui_zoom_out.add_theme_color_override("font_color", COLOR_BLUE)
+	ui_zoom_out.add_theme_stylebox_override("normal", _style_box(Color("#ffffff"), Color("#d6e4f6"), 1, 8, 4))
+	ui_zoom_out.add_theme_stylebox_override("hover", _style_box(Color("#eef5ff"), COLOR_BLUE, 1, 8, 4))
+	ui_zoom_out.pressed.connect(func(): _change_ui_zoom(-10))
+	ui_zoom_group.add_child(ui_zoom_out)
+
+	ui_zoom_label = Label.new()
+	ui_zoom_label.text = "100%"
+	ui_zoom_label.custom_minimum_size = Vector2(58, 34)
+	ui_zoom_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	ui_zoom_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	ui_zoom_label.add_theme_font_override("font", font_poppins_bold)
+	ui_zoom_label.add_theme_font_size_override("font_size", 12)
+	ui_zoom_label.add_theme_color_override("font_color", COLOR_NAVY)
+	ui_zoom_label.add_theme_stylebox_override("normal", _style_box(Color("#ffffff"), Color("#d6e4f6"), 1, 8, 4))
+	ui_zoom_group.add_child(ui_zoom_label)
+
+	var ui_zoom_in := Button.new()
+	ui_zoom_in.text = "+"
+	ui_zoom_in.tooltip_text = "Zoom interface in"
+	ui_zoom_in.custom_minimum_size = Vector2(34, 34)
+	ui_zoom_in.focus_mode = Control.FOCUS_NONE
+	ui_zoom_in.add_theme_font_override("font", font_poppins_bold)
+	ui_zoom_in.add_theme_font_size_override("font_size", 17)
+	ui_zoom_in.add_theme_color_override("font_color", COLOR_BLUE)
+	ui_zoom_in.add_theme_stylebox_override("normal", _style_box(Color("#ffffff"), Color("#d6e4f6"), 1, 8, 4))
+	ui_zoom_in.add_theme_stylebox_override("hover", _style_box(Color("#eef5ff"), COLOR_BLUE, 1, 8, 4))
+	ui_zoom_in.pressed.connect(func(): _change_ui_zoom(10))
+	ui_zoom_group.add_child(ui_zoom_in)
+
 	var back_btn := Button.new()
 	back_btn.text = "←  Back to Home"
-	back_btn.custom_minimum_size = Vector2(156, 42)
+	back_btn.custom_minimum_size = Vector2(122, 34)
+	back_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	back_btn.size_flags_horizontal = Control.SIZE_SHRINK_END
 	back_btn.focus_mode = Control.FOCUS_NONE
 	back_btn.add_theme_font_override("font", font_poppins_bold)
-	back_btn.add_theme_font_size_override("font_size", 14)
+	back_btn.add_theme_font_size_override("font_size", 12)
 	back_btn.add_theme_color_override("font_color", COLOR_NAVY)
 	back_btn.add_theme_color_override("font_hover_color", COLOR_BLUE)
-	back_btn.add_theme_stylebox_override("normal", _style_box(Color("#ffffff"), Color("#dbe8f7"), 1, 20, 12))
-	back_btn.add_theme_stylebox_override("hover", _style_box(Color("#f8fbff"), Color("#bdd6fb"), 1, 20, 12))
-	back_btn.add_theme_stylebox_override("pressed", _style_box(Color("#eef5ff"), Color("#94bdf8"), 1, 20, 12))
+	back_btn.add_theme_stylebox_override("normal", _style_box(Color("#ffffff"), Color("#dbe8f7"), 1, 7, 2))
+	back_btn.add_theme_stylebox_override("hover", _style_box(Color("#f8fbff"), Color("#bdd6fb"), 1, 7, 2))
+	back_btn.add_theme_stylebox_override("pressed", _style_box(Color("#eef5ff"), Color("#94bdf8"), 1, 7, 2))
 	back_btn.pressed.connect(_switch_to_landing)
 	nav_row.add_child(back_btn)
 
@@ -990,7 +1056,7 @@ func _build_app_view() -> void:
 
 	var iteration_vbox := VBoxContainer.new()
 	iteration_vbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	iteration_vbox.add_theme_constant_override("separation", 10)
+	iteration_vbox.add_theme_constant_override("separation", 6)
 	iteration_card.add_child(iteration_vbox)
 
 	var iteration_title := Label.new()
@@ -1005,7 +1071,7 @@ func _build_app_view() -> void:
 	iteration_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	iteration_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	iteration_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	iteration_label.custom_minimum_size = Vector2(0, 88)
+	iteration_label.custom_minimum_size = Vector2(0, 52)
 	iteration_label.add_theme_font_override("font", font_inter)
 	iteration_label.add_theme_font_size_override("font_size", 13)
 	iteration_label.add_theme_color_override("font_color", COLOR_MUTED)
@@ -1070,6 +1136,7 @@ func _build_app_view() -> void:
 	var terminal_drag_handle := Control.new()
 	terminal_drag_handle.custom_minimum_size = Vector2(0, 12)
 	terminal_drag_handle.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	terminal_drag_handle.mouse_filter = Control.MOUSE_FILTER_STOP
 	terminal_drag_handle.mouse_default_cursor_shape = Control.CURSOR_VSIZE
 	terminal_drag_handle.tooltip_text = "Drag up or down to resize Terminal"
 	terminal_drag_handle.gui_input.connect(_on_terminal_drag_handle_input)
@@ -1123,8 +1190,11 @@ func _build_app_view() -> void:
 	console_panel.add_child(console_margin)
 
 	term_scroll = ScrollContainer.new()
+	term_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	term_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	term_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	term_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	term_scroll.mouse_filter = Control.MOUSE_FILTER_STOP
 	console_margin.add_child(term_scroll)
 
 	term_vbox = VBoxContainer.new()
@@ -1149,7 +1219,7 @@ func _app_input_field(parent: Control, label_text: String, default_value: String
 	var lbl := Label.new()
 	lbl.text = label_text
 	lbl.add_theme_font_override("font", font_inter)
-	lbl.add_theme_font_size_override("font_size", 13)
+	lbl.add_theme_font_size_override("font_size", 15)
 	lbl.add_theme_color_override("font_color", Color("#223550"))
 	vbox.add_child(lbl)
 
@@ -1157,7 +1227,12 @@ func _app_input_field(parent: Control, label_text: String, default_value: String
 	line_edit.text = default_value
 	line_edit.caret_blink = true
 	line_edit.caret_blink_interval = 0.55
+	line_edit.focus_mode = Control.FOCUS_ALL
+	line_edit.editable = true
 	line_edit.custom_minimum_size = Vector2(0, 40)
+	# Keep the insertion caret clearly visible against the white input background.
+	line_edit.add_theme_color_override("caret_color", Color("#155dfc"))
+	line_edit.add_theme_color_override("selection_color", Color("#cfe0ff"))
 	line_edit.add_theme_font_override("font", font_inter)
 	line_edit.add_theme_font_size_override("font_size", 13)
 	line_edit.add_theme_color_override("font_color", Color("#223550"))
@@ -1205,6 +1280,52 @@ func _build_viewport_3d(parent: Control) -> void:
 	shake_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	shake_label.visible = false
 	parent.add_child(shake_label)
+
+
+
+	# Loading overlay shown during the intentional 2-second generation step.
+	generation_loading_overlay = PanelContainer.new()
+	generation_loading_overlay.set_anchors_preset(Control.PRESET_CENTER)
+	generation_loading_overlay.offset_left = -112
+	generation_loading_overlay.offset_top = -45
+	generation_loading_overlay.offset_right = 112
+	generation_loading_overlay.offset_bottom = 45
+	generation_loading_overlay.visible = false
+	var loading_style := _style_box(Color(1, 1, 1, 0.96), Color("#d7e5f6"), 1, 12, 16)
+	loading_style.shadow_color = Color(0.03, 0.15, 0.32, 0.10)
+	loading_style.shadow_size = 10
+	generation_loading_overlay.add_theme_stylebox_override("panel", loading_style)
+	parent.add_child(generation_loading_overlay)
+
+	var loading_row := HBoxContainer.new()
+	loading_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	loading_row.add_theme_constant_override("separation", 10)
+	generation_loading_overlay.add_child(loading_row)
+
+	if tex_terminal_loading != null:
+		var loading_icon := TextureRect.new()
+		loading_icon.texture = tex_terminal_loading
+		loading_icon.custom_minimum_size = Vector2(26, 26)
+		loading_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		loading_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		loading_row.add_child(loading_icon)
+	else:
+		var loading_fallback := Label.new()
+		loading_fallback.text = "◌"
+		loading_fallback.custom_minimum_size = Vector2(26, 26)
+		loading_fallback.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		loading_fallback.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		loading_fallback.add_theme_font_override("font", font_poppins_bold)
+		loading_fallback.add_theme_font_size_override("font_size", 22)
+		loading_fallback.add_theme_color_override("font_color", COLOR_BLUE)
+		loading_row.add_child(loading_fallback)
+
+	var loading_text := Label.new()
+	loading_text.text = "Generating structure..."
+	loading_text.add_theme_font_override("font", font_inter)
+	loading_text.add_theme_font_size_override("font_size", 14)
+	loading_text.add_theme_color_override("font_color", Color("#374151"))
+	loading_row.add_child(loading_text)
 
 func _add_scene_lighting(sub_viewport: SubViewport, background: Color) -> void:
 	var env_node := WorldEnvironment.new()
@@ -1312,46 +1433,53 @@ func _log_terminal(text: String) -> void:
 	row.add_theme_constant_override("separation", 9)
 
 	var display_text := text
+	var lower := text.to_lower()
 	var status := "success"
 
-	if text.begins_with("ERROR:"):
+	# Explicit semantic ordering prevents FAIL messages from receiving success icons.
+	if text.begins_with("ERROR:") or lower.contains("fail") or lower.contains("failed"):
 		status = "error"
-		display_text = text.trim_prefix("ERROR:").strip_edges()
-	elif text.begins_with("WARNING:"):
+		display_text = display_text.trim_prefix("ERROR:").strip_edges()
+	elif text.begins_with("WARNING:") or lower.contains("warning"):
 		status = "warning"
-		display_text = text.trim_prefix("WARNING:").strip_edges()
-	elif text == "..." or text.to_lower().contains("running") or text.to_lower().contains("starting"):
-		status = "info"
+		display_text = display_text.trim_prefix("WARNING:").strip_edges()
+	elif text.begins_with("INITIALIZING:") or lower.contains("initializing") or lower.contains("running") or lower.contains("simulating") or lower.contains("starting") or lower.contains("still running") or text == "...":
+		status = "loading"
+		display_text = display_text.trim_prefix("INITIALIZING:").strip_edges()
+	elif text.begins_with("SUCCESS:") or lower.contains("pass") or lower.contains("complete") or lower.contains("generated") or lower.contains("saved") or lower.contains("valid"):
+		status = "success"
+		display_text = display_text.trim_prefix("SUCCESS:").strip_edges()
 
-	# Use the supplied image assets for success/error/warning rows.
-	if status != "info":
+	var status_texture: Texture2D = tex_terminal_success
+	match status:
+		"error":
+			status_texture = tex_terminal_error
+		"warning":
+			status_texture = tex_terminal_warning
+		"loading":
+			status_texture = tex_terminal_loading
+		_:
+			status_texture = tex_terminal_success
+
+	if status_texture != null:
 		var icon := TextureRect.new()
+		icon.texture = status_texture
 		icon.custom_minimum_size = Vector2(20, 20)
 		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 		icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
-
-		match status:
-			"error":
-				icon.texture = tex_terminal_error
-			"warning":
-				icon.texture = tex_terminal_warning
-			_:
-				icon.texture = tex_terminal_success
-
 		row.add_child(icon)
 	else:
-		# Neutral blue dot for in-progress/informational terminal messages.
-		var dot := Label.new()
-		dot.text = "•"
-		dot.custom_minimum_size = Vector2(20, 20)
-		dot.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		dot.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		dot.add_theme_font_override("font", font_poppins_bold)
-		dot.add_theme_font_size_override("font_size", 18)
-		dot.add_theme_color_override("font_color", COLOR_BLUE)
-		row.add_child(dot)
+		var fallback_icon := Label.new()
+		fallback_icon.text = "◌" if status == "loading" else "•"
+		fallback_icon.custom_minimum_size = Vector2(20, 20)
+		fallback_icon.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		fallback_icon.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		fallback_icon.add_theme_font_override("font", font_poppins_bold)
+		fallback_icon.add_theme_font_size_override("font_size", 18)
+		fallback_icon.add_theme_color_override("font_color", COLOR_BLUE)
+		row.add_child(fallback_icon)
 
 	var line := Label.new()
 	line.text = display_text
@@ -1359,7 +1487,6 @@ func _log_terminal(text: String) -> void:
 	line.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	line.add_theme_font_override("font", font_inter)
 	line.add_theme_font_size_override("font_size", 14)
-	# Keep all terminal copy neutral/dark; the icon communicates status.
 	line.add_theme_color_override("font_color", Color("#374151"))
 	row.add_child(line)
 
@@ -1390,21 +1517,27 @@ func _on_terminal_drag_handle_input(event: InputEvent) -> void:
 		else:
 			terminal_drag_active = false
 	elif event is InputEventMouseMotion and terminal_drag_active:
-		var delta_y: float = event.global_position.y - terminal_drag_start_mouse_y
+		# event.global_position is in viewport pixels, while the dashboard is
+		# laid out in pre-scale logical pixels. Convert before resizing.
+		var zoom_factor: float = maxf(0.01, float(ui_zoom_percent) / 100.0)
+		var delta_y: float = (event.global_position.y - terminal_drag_start_mouse_y) / zoom_factor
 		var new_height: float = terminal_drag_start_height - delta_y
-		var max_height: float = max(220.0, get_viewport_rect().size.y - 220.0)
-		# 62 px is approximately the drag handle + Terminal header.
-		terminal_panel.custom_minimum_size.y = clamp(new_height, 62.0, max_height)
+		var logical_viewport_height: float = float(get_viewport_rect().size.y) / zoom_factor
+		var max_height: float = maxf(220.0, logical_viewport_height - 220.0)
+		# 62 px keeps the drag handle + Terminal header visible when minimized.
+		terminal_panel.custom_minimum_size.y = clampf(new_height, 62.0, max_height)
 
 func _on_generate_pressed() -> void:
 	var validation := _validate_inputs(false)
 	if not validation["ok"]:
 		for e in validation["errors"]:
 			_log_terminal("ERROR: %s" % e)
+		_show_toast("Please correct the structural inputs.", "error")
 		return
 
 	if not structure_display.has_sections():
 		_log_terminal("ERROR: W-shape sections are not loaded; cannot draw the structure")
+		_show_toast("Structural section data is not loaded.", "error")
 		return
 
 	var params: Dictionary = validation["params"]
@@ -1413,12 +1546,21 @@ func _on_generate_pressed() -> void:
 	if not check["ok"]:
 		for e in check["errors"]:
 			_log_terminal("ERROR: %s" % e)
+		_show_toast("Structure validation failed.", "error")
 		return
+
+	_show_toast("Generating structure...", "info")
+	_log_terminal("INITIALIZING: generating structure")
+	if generation_loading_overlay:
+		generation_loading_overlay.visible = true
+	vp_label.visible = false
+
+	# Intentional 2-second generation/loading state requested for the UI.
+	await get_tree().create_timer(2.0).timeout
 
 	current_params = params
 	current_topo = topo
 	has_structure = true
-	vp_label.visible = false
 	if structural_controls:
 		structural_controls.visible = false
 	if simulation_controls:
@@ -1429,16 +1571,19 @@ func _on_generate_pressed() -> void:
 	_frame_camera_on_structure(params)
 	rule_preview_dropdown.select(0)
 	rule_preview_dropdown.visible = true
+	if generation_loading_overlay:
+		generation_loading_overlay.visible = false
 
 	var nodes: Dictionary = topo["nodes"]
 	_log_terminal(
-		"generated %d nodes, %d columns, %d beams (all members %s)" % [
+		"SUCCESS: generated %d nodes, %d columns, %d beams (all members %s)" % [
 			nodes.size(), (topo["columns"] as Array).size(), (topo["beams"] as Array).size(),
 			StaticStructureView.STARTING_SECTION
 		]
 	)
 	for w in check["warnings"]:
 		_log_terminal("WARNING: %s" % w)
+	_show_toast("Structure generated successfully.", "success")
 
 func _frame_camera_on_structure(params: Dictionary) -> void:
 	if structure_camera == null:
@@ -1448,6 +1593,8 @@ func _frame_camera_on_structure(params: Dictionary) -> void:
 	var height_y: float = params["floor_count"] * params["story_height"]
 	var extents := Vector3(width_x, height_y, width_z)
 	var center := extents / 2.0
+	structure_zoom_target = center
+	_reset_structure_zoom()
 
 	var bounding_radius := extents.length() / 2.0
 	var half_fov_rad := deg_to_rad(structure_camera.fov) / 2.0
@@ -1457,6 +1604,133 @@ func _frame_camera_on_structure(params: Dictionary) -> void:
 	structure_camera.global_position = center + direction * distance
 	structure_camera.look_at(center, Vector3.UP)
 	structure_camera.sync_look_from_rotation()
+
+func _change_ui_zoom(delta_percent: int) -> void:
+	_set_ui_zoom(ui_zoom_percent + delta_percent)
+
+func _set_ui_zoom(percent: int) -> void:
+	ui_zoom_percent = clampi(percent, 70, 130)
+	if ui_zoom_label:
+		ui_zoom_label.text = "%d%%" % ui_zoom_percent
+
+	# Scale only the dashboard instead of changing the Window content scale.
+	# This preserves correct mouse-wheel scrolling and drag coordinates.
+	var window := get_window()
+	if window:
+		window.content_scale_factor = 1.0
+
+	_apply_ui_zoom_layout()
+	_show_toast("Interface zoom: %d%%" % ui_zoom_percent, "info")
+
+func _apply_ui_zoom_layout() -> void:
+	if app_view_container == null:
+		return
+
+	var factor: float = maxf(0.01, float(ui_zoom_percent) / 100.0)
+	var viewport_size := get_viewport_rect().size
+
+	# Give the dashboard an inverse logical size, then visually scale it.
+	# Result: browser-like UI zoom while Control input transforms remain valid.
+	app_view_container.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	app_view_container.position = Vector2.ZERO
+	app_view_container.scale = Vector2(factor, factor)
+	app_view_container.size = viewport_size / factor
+
+func _zoom_structure(delta_percent: int) -> void:
+	if structure_camera == null or not has_structure:
+		return
+
+	var new_percent: int = clampi(structure_zoom_percent + delta_percent, 40, 200)
+	if new_percent == structure_zoom_percent:
+		return
+
+	# Higher percent = camera moves closer to the structure target.
+	var old_scale := 100.0 / float(structure_zoom_percent)
+	var new_scale := 100.0 / float(new_percent)
+	var direction := structure_camera.global_position - structure_zoom_target
+	if direction.length() < 0.001:
+		return
+	var base_vector := direction / old_scale
+	structure_camera.global_position = structure_zoom_target + base_vector * new_scale
+	structure_camera.look_at(structure_zoom_target, Vector3.UP)
+	structure_camera.sync_look_from_rotation()
+
+	structure_zoom_percent = new_percent
+	if structure_zoom_label:
+		structure_zoom_label.text = "%d%%" % structure_zoom_percent
+
+func _reset_structure_zoom() -> void:
+	structure_zoom_percent = 100
+	if structure_zoom_label:
+		structure_zoom_label.text = "100%"
+
+func _show_toast(message: String, kind: String = "success") -> void:
+	if app_view_container == null:
+		return
+
+	var toast := PanelContainer.new()
+	toast.z_index = 5000
+	toast.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	toast.modulate.a = 0.0
+
+	# Center the notification horizontally near the top-middle of the dashboard.
+	toast.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	toast.offset_left = -230
+	toast.offset_top = 28
+	toast.offset_right = 230
+	toast.offset_bottom = 96
+
+	var border := Color("#86efac")
+	var bg := Color("#ecfdf5")
+	var fg := Color("#166534")
+	var icon_text := "✓"
+	if kind == "info":
+		border = Color("#93c5fd")
+		bg = Color("#eaf3ff")
+		fg = COLOR_BLUE
+		icon_text = "•"
+	elif kind == "warning":
+		border = Color("#facc15")
+		bg = Color("#fff8d6")
+		fg = Color("#b45309")
+		icon_text = "!"
+	elif kind == "error":
+		border = Color("#f87171")
+		bg = Color("#fff0f0")
+		fg = Color("#b91c1c")
+		icon_text = "!"
+
+	var st := _style_box(bg, border, 2, 12, 16)
+	st.shadow_color = Color(0.02, 0.08, 0.18, 0.22)
+	st.shadow_size = 16
+	toast.add_theme_stylebox_override("panel", st)
+	app_view_container.add_child(toast)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	toast.add_child(row)
+
+	var icon := Label.new()
+	icon.text = icon_text
+	icon.add_theme_font_override("font", font_poppins_bold)
+	icon.add_theme_font_size_override("font_size", 20)
+	icon.add_theme_color_override("font_color", fg)
+	row.add_child(icon)
+
+	var lbl := Label.new()
+	lbl.text = message
+	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	lbl.add_theme_font_override("font", font_inter)
+	lbl.add_theme_font_size_override("font_size", 13)
+	lbl.add_theme_color_override("font_color", Color("#374151"))
+	row.add_child(lbl)
+
+	var tween := create_tween()
+	tween.tween_property(toast, "modulate:a", 1.0, 0.16)
+	tween.tween_interval(2.0)
+	tween.tween_property(toast, "modulate:a", 0.0, 0.28)
+	tween.tween_callback(toast.queue_free)
 
 func _on_simulate_pressed() -> void:
 	if not has_structure:
@@ -1490,9 +1764,10 @@ func _on_simulate_pressed() -> void:
 		return
 	_clear_iteration_list()
 	current_run_dir = run_dir
+	_show_toast("Simulation started.", "info")
 	_start_python_nltha(sim_params, run_dir)
 	_log_terminal(
-		"running seismic simulation: magnitude %.1f, duration %.1fs" % [
+		"INITIALIZING: seismic simulation — magnitude %.1f, duration %.1fs" % [
 			sim_params["magnitude"], sim_params["duration"]
 		]
 	)
@@ -1700,9 +1975,11 @@ func _finish_run() -> void:
 		_log_terminal("ERROR: the simulation process stopped unexpectedly after %d iteration(s)" % int(summary.get("iterations_completed", 0)))
 		iteration_label.text = "Stopped unexpectedly after %d iteration(s)" % int(summary.get("iterations_completed", 0))
 		return
-	_log_terminal("===== run complete: %d iteration(s) saved, stopped because: %s, final result: %s =====" % [
+	var final_status := str(summary.get("final_status", "?"))
+	var terminal_prefix := "SUCCESS:" if final_status.to_upper() == "PASS" else "ERROR:"
+	_log_terminal("%s run complete: %d iteration(s) saved, stopped because: %s, final result: %s" % [terminal_prefix,
 		int(summary.get("iterations_completed", 0)), str(summary.get("stop_reason", "unknown")),
-		str(summary.get("final_status", "?"))
+		final_status
 	])
 	iteration_label.text = "Completed: %d iteration(s) -- %s" % [
 		int(summary.get("iterations_completed", 0)), str(summary.get("stop_reason", "unknown"))]
@@ -1737,19 +2014,19 @@ func _add_iteration_entry(index: int, record: Dictionary) -> void:
 	row.add_child(button)
 
 	var download_btn := Button.new()
-	download_btn.text = "⇩"
+	download_btn.text = "⬇"
 	download_btn.tooltip_text = "Download iteration %d record" % index
-	download_btn.custom_minimum_size = Vector2(38, 38)
+	download_btn.custom_minimum_size = Vector2(44, 40)
 	download_btn.focus_mode = Control.FOCUS_NONE
 	download_btn.add_theme_font_override("font", font_poppins_bold)
-	download_btn.add_theme_font_size_override("font_size", 18)
-	download_btn.add_theme_color_override("font_color", COLOR_BLUE)
-	download_btn.add_theme_color_override("font_hover_color", COLOR_BLUE)
-	download_btn.add_theme_color_override("font_pressed_color", COLOR_BLUE)
-	download_btn.add_theme_color_override("font_focus_color", COLOR_BLUE)
-	download_btn.add_theme_stylebox_override("normal", _style_box(Color("#f8fbff"), Color("#cfe0ff"), 1, 7, 4))
-	download_btn.add_theme_stylebox_override("hover", _style_box(Color("#eef5ff"), COLOR_BLUE, 1, 7, 4))
-	download_btn.add_theme_stylebox_override("pressed", _style_box(Color("#e5efff"), COLOR_BLUE, 1, 7, 4))
+	download_btn.add_theme_font_size_override("font_size", 24)
+	download_btn.add_theme_color_override("font_color", Color("#0755e9"))
+	download_btn.add_theme_color_override("font_hover_color", Color("#003fc4"))
+	download_btn.add_theme_color_override("font_pressed_color", Color("#00349f"))
+	download_btn.add_theme_color_override("font_focus_color", Color("#0755e9"))
+	download_btn.add_theme_stylebox_override("normal", _style_box(Color("#eaf2ff"), Color("#8bb5ff"), 2, 8, 4))
+	download_btn.add_theme_stylebox_override("hover", _style_box(Color("#d8e7ff"), Color("#0755e9"), 2, 8, 4))
+	download_btn.add_theme_stylebox_override("pressed", _style_box(Color("#c5dcff"), Color("#003fc4"), 2, 8, 4))
 	download_btn.pressed.connect(func(): _download_iteration_record(run_dir, index))
 	row.add_child(download_btn)
 
@@ -2117,6 +2394,8 @@ func _on_reset_pressed() -> void:
 	rule_preview_dropdown.select(0)
 	rule_preview_dropdown.visible = false
 	_reset_terminal()
+	_reset_structure_zoom()
+	_show_toast("Structure reset.", "info")
 
 func _on_rule_preview_selected(index: int) -> void:
 	structure_display.build(current_topo)
