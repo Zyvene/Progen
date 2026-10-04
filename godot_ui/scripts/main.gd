@@ -63,6 +63,9 @@ var story_height_input: LineEdit
 var magnitude_input: LineEdit
 var duration_input: LineEdit
 var structural_controls: VBoxContainer
+var structural_summary_box: VBoxContainer
+var structural_summary_title: Label
+var structural_summary_divider: HSeparator
 var simulation_controls: VBoxContainer
 var run_simulation_button: Button
 
@@ -897,14 +900,34 @@ func _build_app_view() -> void:
 	generate_btn.pressed.connect(_on_generate_pressed)
 	structural_controls.add_child(generate_btn)
 
-	# After successful generation this replaces the structural form entirely.
+	# After successful generation this replaces the editable structural form.
+	# It shows the generated structural values as a read-only summary together
+	# with the seismic inputs that the user can configure.
 	simulation_controls = VBoxContainer.new()
-	simulation_controls.add_theme_constant_override("separation", 9)
+	simulation_controls.add_theme_constant_override("separation", 10)
 	simulation_controls.visible = false
 	left_vbox.add_child(simulation_controls)
 
+	structural_summary_title = Label.new()
+	structural_summary_title.text = "▣   Your Structural Inputs"
+	structural_summary_title.visible = false
+	structural_summary_title.add_theme_font_override("font", font_poppins_bold)
+	structural_summary_title.add_theme_font_size_override("font_size", 17)
+	structural_summary_title.add_theme_color_override("font_color", COLOR_BLUE)
+	simulation_controls.add_child(structural_summary_title)
+
+	structural_summary_box = VBoxContainer.new()
+	structural_summary_box.add_theme_constant_override("separation", 5)
+	structural_summary_box.visible = false
+	simulation_controls.add_child(structural_summary_box)
+
+	structural_summary_divider = HSeparator.new()
+	structural_summary_divider.add_theme_constant_override("separation", 6)
+	structural_summary_divider.visible = false
+	simulation_controls.add_child(structural_summary_divider)
+
 	var sim_title := Label.new()
-	sim_title.text = "⌁   Seismic Inputs"
+	sim_title.text = "⌁   Your Seismic Inputs"
 	sim_title.add_theme_font_override("font", font_poppins_bold)
 	sim_title.add_theme_font_size_override("font_size", 17)
 	sim_title.add_theme_color_override("font_color", COLOR_BLUE)
@@ -1527,6 +1550,44 @@ func _on_terminal_drag_handle_input(event: InputEvent) -> void:
 		# 62 px keeps the drag handle + Terminal header visible when minimized.
 		terminal_panel.custom_minimum_size.y = clampf(new_height, 62.0, max_height)
 
+func _add_structural_summary_row(label_text: String, value_text: String) -> void:
+	if structural_summary_box == null:
+		return
+
+	var row := HBoxContainer.new()
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_theme_constant_override("separation", 8)
+
+	var key_label := Label.new()
+	key_label.text = label_text
+	key_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	key_label.add_theme_font_override("font", font_inter)
+	key_label.add_theme_font_size_override("font_size", 12)
+	key_label.add_theme_color_override("font_color", COLOR_MUTED)
+	row.add_child(key_label)
+
+	var value_label := Label.new()
+	value_label.text = value_text
+	value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	value_label.add_theme_font_override("font", font_poppins_bold)
+	value_label.add_theme_font_size_override("font_size", 12)
+	value_label.add_theme_color_override("font_color", COLOR_TEXT)
+	row.add_child(value_label)
+
+	structural_summary_box.add_child(row)
+
+func _refresh_structural_summary(params: Dictionary) -> void:
+	if structural_summary_box == null:
+		return
+	_clear_children(structural_summary_box)
+
+	_add_structural_summary_row("Bay X", str(params.get("bay_count_x", "-")))
+	_add_structural_summary_row("Bay Y", str(params.get("bay_count_y", "-")))
+	_add_structural_summary_row("Bay Width X", "%.2f m" % float(params.get("bay_width_x", 0.0)))
+	_add_structural_summary_row("Bay Width Y", "%.2f m" % float(params.get("bay_width_y", 0.0)))
+	_add_structural_summary_row("Floor Count", str(params.get("floor_count", "-")))
+	_add_structural_summary_row("Story Height", "%.2f m" % float(params.get("story_height", 0.0)))
+
 func _on_generate_pressed() -> void:
 	var validation := _validate_inputs(false)
 	if not validation["ok"]:
@@ -1561,6 +1622,14 @@ func _on_generate_pressed() -> void:
 	current_params = params
 	current_topo = topo
 	has_structure = true
+
+	# After Generate, show only Your Seismic Inputs.
+	if structural_summary_title:
+		structural_summary_title.visible = false
+	if structural_summary_box:
+		structural_summary_box.visible = false
+	if structural_summary_divider:
+		structural_summary_divider.visible = false
 	if structural_controls:
 		structural_controls.visible = false
 	if simulation_controls:
@@ -1742,6 +1811,21 @@ func _on_simulate_pressed() -> void:
 		for e in validation["errors"]:
 			_log_terminal("ERROR: %s" % e)
 		return
+
+	# When Run Simulation is clicked, reveal the generated structural inputs
+	# above Your Seismic Inputs.
+	_refresh_structural_summary(current_params)
+	if structural_summary_title:
+		structural_summary_title.visible = true
+	if structural_summary_box:
+		structural_summary_box.visible = true
+	if structural_summary_divider:
+		structural_summary_divider.visible = true
+
+	# Once the simulation is launched, hide Run Simulation so the only
+	# action left in this state is Reset Structure.
+	if run_simulation_button:
+		run_simulation_button.visible = false
 
 	if python_simulation_running:
 		_log_terminal("OpenSeesPy NLTHA is already running")
@@ -2386,8 +2470,16 @@ func _on_reset_pressed() -> void:
 	has_structure = false
 	if simulation_controls:
 		simulation_controls.visible = false
+	if structural_summary_title:
+		structural_summary_title.visible = false
+	if structural_summary_box:
+		structural_summary_box.visible = false
+	if structural_summary_divider:
+		structural_summary_divider.visible = false
 	if structural_controls:
 		structural_controls.visible = true
+	if run_simulation_button:
+		run_simulation_button.visible = true
 	current_params = {}
 	current_topo = {}
 	vp_label.visible = true
