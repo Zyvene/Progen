@@ -334,8 +334,7 @@ def _interpretation(record: dict, summary: dict, iteration: int, final: bool, fy
         if phase == "seismic":
             reasons.append(f"The analysis stopped at t = {float(record.get('collapse_time_s') or 0.0):.2f} s, which indicates a collapse.")
         reasons += _deficiencies(evaluation, fy_mpa)
-    first = [f"Based on the metrics, this structure {verdict} ProGen's evaluation under {quake}."
-             + ("".join(f"<br/>&bull; {reason}" for reason in reasons))]
+    first = [f"Based on the metrics, this structure {verdict} ProGen's evaluation under {quake}."] + reasons
 
     second: List[str] = []
     stress = record.get("peak_stress_mpa")
@@ -372,7 +371,7 @@ def _interpretation(record: dict, summary: dict, iteration: int, final: bool, fy
     elif following is not None and isinstance(following.get("applied_feedback"), dict):
         actions = _actions_text(following["applied_feedback"])
         if actions:
-            third.append(f"Next, ProGen {actions} to produce Iteration {iteration + 1}.")
+            third.append(f"With all of these in mind, ProGen {actions} to produce Iteration {iteration + 1}.")
     elif not passed:
         third.append(f"ProGen's feedback rules act on these results to produce Iteration {iteration + 1}.")
 
