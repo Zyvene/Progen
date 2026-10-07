@@ -193,7 +193,7 @@ Iteration 0 is the generated structure before any feedback, so **Iteration 0 is 
   - T ≥ 0.7 s → **drift limit 0.020**.
 - **696-701: ground motion input.** Two `UniformExcitation` patterns apply the X and Y records to the base at the same time (acceleration in g × 9.807).
 - **702: Rayleigh damping** a0 = 2ζω with ζ = 0.05 (mass-proportional) (NSCP §208.5.3.2).
-- **703-710: transient analysis.** Newmark average acceleration (γ = ½, β = ¼, unconditionally stable), Newton-Raphson, `NormDispIncr` 1e-7 convergence test, BandGeneral solver.
+- **703-710: transient analysis.** Newmark average acceleration (γ = ½, β = ¼, unconditionally stable), Newton-Raphson, `NormDispIncr` 1e-7 convergence test, UmfPack solver (V1.1; identical results to BandGeneral, faster on large buildings).
 - **720-734: the time loop.** 2,529 steps of 0.01 s. If a step fails to converge, the building has **collapsed during the earthquake** (`collapse_phase = "seismic"`, with the collapse time recorded).
   - Every 10 steps the loop sends the latest frame and the rupture list to `pipeline.py` (for the live shake, §2.12).
 - **502-621 `ResponseTracker`: what is measured at every step (`update`, 529).**
@@ -233,24 +233,26 @@ Iteration 0 is the generated structure before any feedback, so **Iteration 0 is 
 
 - **11-12:** the 16 listed sections in upsizing order (smallest → largest); `select_section` only searches above the current section, so from W12X26 a member can reach 15 larger sections.
 - **26-36 `select_section`:** skip-forward sizing. The smallest listed section that meets the requirement, **at least one step** up. If `one_step` is set, exactly one step (used after a seismic collapse). Returns None at W36X529 ("section limit reached").
-- **39-41 `_strength_requirements`:** A ≥ A_current × ratio and Sx ≥ Sx_current × ratio (first-order: stress ∝ 1/A and 1/S).
+- **39-41 `_strength_requirements`:** A ≥ A_current × ratio, Sx ≥ Sx_current × ratio and Sy ≥ Sy_current × ratio (first-order: stress ∝ 1/A, 1/Sx and 1/Sy, matching the stress check N/A + Mstrong/Sx + Mweak/Sy).
 - **44-89 `_Requests`:** collects every request. **If two rules ask for the same member, the larger section wins** (55-65). Braces are added or upsized; struts added.
-- **148-281 `apply_feedback`: the rule-to-action map (all rules apply together).**
+- **109-125 `_column_group`:** a column's location group within its story: corner, perimeter on rows 0 / last (`row_edge`), perimeter on columns 0 / last (`col_edge`), or interior. Beams, braces and struts have no group.
+- **127-138 `_group_column_upsizes`:** for Rule 1 only, every column in the same story and location group as an upsized column gets at least the largest section requested in that group; a larger member keeps its own section (V1.1).
+- **180-315 `apply_feedback`: the rule-to-action map (all rules apply together).**
 
 | Rule | Lines | Action |
 |---|---|---|
-| 1 Yield | 167-168 | upsize that member (A, Sx ≥ × ratio) |
-| 2 Buckling | 170-177 | add a Y mid-height strut (preferring a Y-braced bay); if already strutted, upsize for ry ≥ × √ratio |
-| 3 Rupture | 179-180 | upsize that member |
-| 4 Floor IDR | 182-185 | X-brace every bay of that floor, both directions (existing braces: upsize) |
-| 5 Soft story | 187-193 | upsize that story's columns for Ix (X) or Iy (Y) ≥ × ratio, and X-brace every bay of that story in the soft direction (existing braces: upsize) |
-| 6 Mid-story | 199-203 | X-brace perimeter bays of those floors |
-| 7 Directional | 205-207 | X-brace the weak direction's bays |
-| 8 Roof | 209-220 | upsize the columns of the story with the greatest drift (Ix or Iy) |
-| 9 Torsion | 222-227 | X-brace all perimeter bays, all floors |
-| 10 Mean stress | 229-236 | upsize every member, brace, strut |
+| 1 Yield | 199-200, 270 | upsize that member (A, Sx, Sy ≥ × ratio); columns: the whole story location group gets at least that section |
+| 2 Buckling | 202-209 | add a Y mid-height strut (preferring a Y-braced bay); if already strutted, upsize for ry ≥ × √ratio |
+| 3 Rupture | 211-212 | upsize that member |
+| 4 Floor IDR | 214-217 | X-brace every bay of that floor, both directions (existing braces: upsize) |
+| 5 Soft story | 219-225 | upsize that story's columns for Ix (X) or Iy (Y) ≥ × ratio, and X-brace every bay of that story in the soft direction (existing braces: upsize) |
+| 6 Mid-story | 231-235 | X-brace perimeter bays of those floors |
+| 7 Directional | 237-239 | X-brace the weak direction's bays |
+| 8 Roof | 241-252 | upsize the columns of the story with the greatest drift (Ix or Iy) |
+| 9 Torsion | 254-259 | X-brace all perimeter bays, all floors |
+| 10 Mean stress | 261-268 | upsize every member, brace, strut |
 
-- **238-281:** applies the requests to a copy of the state and logs every action (target, from, to, rules). **Sections only ever increase; bracing is only ever added.**
+- **272-315:** applies the requests to a copy of the state and logs every action (target, from, to, rules). **Sections only ever increase; bracing is only ever added.**
 
 ### 2.10 The closed loop — `pipeline.py`
 
@@ -343,6 +345,8 @@ Iteration 0 is the generated structure before any feedback, so **Iteration 0 is 
 
 ## 3. The default building, iteration by iteration
 
+> **V1.1 note.** The walkthrough below is the V1 run. In V1.1 (Sy added to the strength requirement, Rule 1 column grouping by story and location, UmfPack solver) the same inputs give an identical Iteration 0 (211.14 MPa peak, 38 members over yield, 38 upsizes). After that, members over yield go 19 → 4 → 4 → 0, against 33 → 19 → 2 → 0 in V1, and the run also passes at Iteration 4.
+
 Actual run: `simulation.py --run-dir` with the UI defaults (M5, 15 s). **Result: PASS at Iteration 4** (5 iterations saved; stop reason "all evaluation checks pass"). The same result is obtained through the Godot UI.
 
 **Before Iteration 0 (same for every iteration):**
@@ -364,7 +368,7 @@ Drift stays far below the NSCP 2.0 % limit throughout (roof limit 0.020 × 14 m 
   - the 18 interior X-direction floor beams on levels 1-3 (the lines carrying the full 6 m tributary width: 36 kN/m);
   - 12 story-1 columns (8 edge, 4 interior);
   - 8 story-2 columns (4 edge, 4 interior).
-- **Action (`feedback_engine.py` 167-168 → `select_section` 26-36):** each member moves to the smallest section with A and Sx ≥ current × its own ratio.
+- **Action (`feedback_engine.py` 167-168 → `select_section` 26-36, V1 code):** each member moves to the smallest section with A and Sx ≥ current × its own ratio.
   - Ratios up to about 1.16 → **W14X30** (Sx 688 vs 547 × 10³ mm³, +26 %).
   - Higher ratios need more area than W14X30's +16 %, so they skip to **W16X36**.
   - Result: 14 beams + 7 columns → W14X30; 4 beams + 13 columns → W16X36.

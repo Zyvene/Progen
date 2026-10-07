@@ -417,7 +417,7 @@ def _assign_masses(node_mass: Dict[int, float]) -> None:
 
 
 def _apply_gravity_and_masses(built: BuiltModel) -> None:
-    ops.system("BandGeneral")
+    ops.system("UmfPack")
     ops.numberer("RCM")
     ops.constraints("Plain")
     ops.integrator("LoadControl", 0.1)
@@ -465,7 +465,7 @@ def elastic_story_stiffness(topology: BuildingTopology, model_state: Optional[di
                 load = [0.0] * 6
                 load[dof - 1] = share
                 ops.load(tag, *load)
-        ops.system("BandGeneral")
+        ops.system("UmfPack")
         ops.numberer("RCM")
         ops.constraints("Plain")
         ops.integrator("LoadControl", 1.0)
@@ -640,7 +640,7 @@ def _elastic_member_stress(built: BuiltModel) -> Dict[int, float]:
 
 def elastic_gravity_evaluation(topology: BuildingTopology, model_state: Optional[dict] = None) -> dict:
     built = build_model(topology, model_state=model_state, nonlinear=False)
-    ops.system("BandGeneral")
+    ops.system("UmfPack")
     ops.numberer("RCM")
     ops.constraints("Plain")
     ops.integrator("LoadControl", 1.0)
@@ -703,7 +703,7 @@ def run_nltha(
     ops.wipeAnalysis()
     ops.constraints("Transformation")
     ops.numberer("RCM")
-    ops.system("BandGeneral")
+    ops.system("UmfPack")
     ops.test("NormDispIncr", 1.0e-7, 20, 0)
     ops.algorithm("Newton")
     ops.integrator("Newmark", 0.5, 0.25)

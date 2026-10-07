@@ -132,7 +132,7 @@ frame with fallen members on the ground and shows the collapse time.
 
 | Rule | Action |
 |---|---|
-| 1, 3 | Upsize the member to the smallest listed section with A and Sx ≥ current x demand ratio (at least one step) |
+| 1, 3 | Upsize the member to the smallest listed section with A, Sx and Sy ≥ current x demand ratio (at least one step). Rule 1 only: every column in the same story and the same location group (corner; perimeter on rows 0 / last; perimeter on columns 0 / last; interior) gets at least the same section |
 | 2 | Add a Y-direction mid-height strut at the column (preferring a Y-braced bay); if already strutted, upsize to ry ≥ current x √ratio |
 | 4 | X-brace every bay of the floor, both directions (existing braces: upsize with A ≥ current x ratio) |
 | 5 | Upsize the soft story's columns: Ix (X) or Iy (Y) ≥ current x required stiffness ratio; and X-brace every bay of the soft story in the soft direction (existing braces: upsize with A ≥ current x ratio) |
@@ -140,7 +140,7 @@ frame with fallen members on the ground and shows the collapse time.
 | 7 | X-brace the weak direction's bays on the floor |
 | 8 | Upsize the columns of the story with the greatest drift: Ix or Iy ≥ current x IDR / limit |
 | 9 | X-brace all perimeter bays on all floors (ratio / 1.2 for existing braces) |
-| 10 | Upsize every member, brace and strut (A and Sx ≥ current x mean stress / Fy) |
+| 10 | Upsize every member, brace and strut (A, Sx and Sy ≥ current x mean stress / Fy) |
 
 When several rules target the same member, the largest requested section
 wins; a member already at W36X529 is reported as "section limit reached".
@@ -206,7 +206,7 @@ tool version. Runs with a custom `--motion` file are never reused.
   (NSCP 2015 §208.6.2) plus member self-weight.
 - **Damping:** 5 % mass-proportional Rayleigh (NSCP §208.5.3.2).
 - **Analysis:** 10-step gravity (Newton), eigenvalue for T, Newmark average
-  acceleration at dt = 0.01 s, BandGeneral solver, X and Y excitation together.
+  acceleration at dt = 0.01 s, UmfPack solver, X and Y excitation together.
 
 ## Ground motion (Option A)
 

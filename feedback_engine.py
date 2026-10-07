@@ -38,7 +38,7 @@ def select_section(current: str, requirements: Dict[str, float], one_step: bool 
 
 def _strength_requirements(current: str, ratio: float) -> Dict[str, float]:
     section = SECTIONS[current]
-    return {"A_m2": section.A_m2 * ratio, "Sx_m3": section.Sx_m3 * ratio}
+    return {"A_m2": section.A_m2 * ratio, "Sx_m3": section.Sx_m3 * ratio, "Sy_m3": section.Sy_m3 * ratio}
 
 
 class _Requests:
@@ -104,6 +104,38 @@ def _frame_bays(topology: BuildingTopology, story: int, axis: str, perimeter_onl
 def _story_columns(topology: BuildingTopology, story: int) -> List[str]:
     grid = generate_topology_grid(topology)
     return [member_id(i, j) for i, j in grid.column_pairs if j[0] == story]
+
+
+def _column_group(topology: BuildingTopology, member: str) -> Optional[Tuple[int, str]]:
+    lower, upper = member.split("|")
+    i_key = [int(value) for value in lower.split(",")]
+    j_key = [int(value) for value in upper.split(",")]
+    if i_key[1:] != j_key[1:] or j_key[0] != i_key[0] + 1:
+        return None
+    story, row, col = j_key
+    on_row_edge = row in (0, topology.bay_count_y)
+    on_col_edge = col in (0, topology.bay_count_x)
+    if on_row_edge and on_col_edge:
+        return (story, "corner")
+    if on_row_edge:
+        return (story, "row_edge")
+    if on_col_edge:
+        return (story, "col_edge")
+    return (story, "interior")
+
+
+def _group_column_upsizes(topology: BuildingTopology, state: dict, req: "_Requests") -> None:
+    targets: Dict[Tuple[int, str], str] = {}
+    for member, (name, rules) in req.members.items():
+        group = _column_group(topology, member)
+        if group is None or 1 not in rules:
+            continue
+        if group not in targets or SECTION_ORDER.index(name) > SECTION_ORDER.index(targets[group]):
+            targets[group] = name
+    for member, current in state["member_sections"].items():
+        group = _column_group(topology, member)
+        if group in targets and SECTION_ORDER.index(targets[group]) > SECTION_ORDER.index(current):
+            req._merge(req.members, member, current, targets[group], 1, 0.0, member)
 
 
 def _column_grid_location(entry: dict) -> Tuple[int, int, int]:
@@ -234,6 +266,8 @@ def apply_feedback(topology: BuildingTopology, model_state: Optional[dict], eval
             req.upsize_brace(key, ratio, 10)
         for key in list(state["struts"]):
             req.upsize_strut(key, ratio, 10)
+
+    _group_column_upsizes(topology, state, req)
 
     new_state = copy.deepcopy(state)
     actions: List[dict] = []
